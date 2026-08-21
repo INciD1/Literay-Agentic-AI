@@ -1,1 +1,1 @@
-# Litera-Agentic-AI
+# Literay-Agentic-AI
