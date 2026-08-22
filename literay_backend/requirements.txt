@@ -1,0 +1,6 @@
+google-adk
+google-cloud-aiplatform[agent_engines,adk]
+google-cloud-discoveryengine
+tenacity
+python-dotenv
+pytest
