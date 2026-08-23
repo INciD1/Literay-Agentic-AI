@@ -1,7 +1,9 @@
 """Tests for Settings.from_env — config should fail loudly and early."""
-import importlib
 import os
 import unittest
+
+from literay_agent.config import Settings
+from literay_agent.exceptions import ConfigError
 
 
 class TestSettings(unittest.TestCase):
@@ -16,19 +18,13 @@ class TestSettings(unittest.TestCase):
         os.environ.pop("GOOGLE_CLOUD_PROJECT", None)
         os.environ.pop("VERTEX_SEARCH_ENGINE_ID", None)
 
-        from literay_agent import config
-        from literay_agent.exceptions import ConfigError
-
-        importlib.reload(config)  # re-evaluate module-level `settings` singleton
         with self.assertRaises(ConfigError):
-            config.Settings.from_env()
+            Settings.from_env()
 
     def test_defaults_applied_when_optional_vars_absent(self):
         os.environ["GOOGLE_CLOUD_PROJECT"] = "test-project"
         os.environ["VERTEX_SEARCH_ENGINE_ID"] = "test-engine"
         os.environ.pop("GOOGLE_CLOUD_LOCATION", None)
-
-        from literay_agent.config import Settings
 
         settings = Settings.from_env()
         self.assertEqual(settings.location, "us-central1")
