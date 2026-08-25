@@ -4,3 +4,5 @@ google-cloud-discoveryengine
 tenacity
 python-dotenv
 pytest
+google-cloud-storage 
+google-cloud-firestore 
