@@ -25,9 +25,11 @@ class TestSettings(unittest.TestCase):
         os.environ["GOOGLE_CLOUD_PROJECT"] = "test-project"
         os.environ["VERTEX_SEARCH_ENGINE_ID"] = "test-engine"
         os.environ.pop("GOOGLE_CLOUD_LOCATION", None)
+        os.environ.pop("AGENT_ENGINE_LOCATION", None)
 
         settings = Settings.from_env()
-        self.assertEqual(settings.location, "us-central1")
+        self.assertEqual(settings.location, "global")
+        self.assertEqual(settings.agent_engine_location, "us-central1")
         self.assertEqual(settings.agent_engine_id, "")
 
 
