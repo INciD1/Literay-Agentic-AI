@@ -31,10 +31,19 @@ class SearchResult(TypedDict, total=False):
 def _serving_config_path() -> str:
     return (
         f"projects/{settings.project_id}/locations/{settings.location}"
-        f"/collections/default_collection/engines/{settings.search_engine_id}"
-        f"/servingConfigs/default_config"
+        f"/collections/default_collection/dataStores/{settings.search_engine_id}"
+        f"/servingConfigs/default_search"
     )
 
+def _extract_clause(doc) -> str:
+    struct = doc.derived_struct_data
+    extractive = struct.get("extractive_answers", [])
+    if extractive:
+        return extractive[0].get("content", "")
+    snippets = struct.get("snippets", [])
+    if snippets:
+        return snippets[0].get("snippet", "")
+    return ""
 
 @retry(
     stop=stop_after_attempt(3),
@@ -76,7 +85,7 @@ def search_document(query: str, document_id: str) -> SearchResult:
             page_size=3,
         )
         results = _run_search(client, request)
-        clauses = [r.document.derived_struct_data.get("snippet", "") for r in results]
+        clauses = [c for r in results if (c := _extract_clause(r.document))]
         logger.info("search_document: found %d clause(s)", len(clauses))
         return {"status": "success", "clauses": clauses}
     except Exception as exc:  # noqa: BLE001 — intentional: tool contract requires a dict, never a raise

@@ -4,3 +4,4 @@ __pycache__/
 .env
 .adk/
 *.db
+tempCodeRunnerFile.py
