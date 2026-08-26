@@ -26,12 +26,12 @@ logger = get_logger(__name__)
 
 session_service = VertexAiSessionService(
     project=config.settings.project_id,
-    location=config.settings.location,
+    location=config.settings.agent_engine_location,
     agent_engine_id=config.settings.agent_engine_id,
 )
 memory_service = VertexAiMemoryBankService(
     project=config.settings.project_id,
-    location=config.settings.location,
+    location=config.settings.agent_engine_location,
     agent_engine_id=config.settings.agent_engine_id,
 )
 

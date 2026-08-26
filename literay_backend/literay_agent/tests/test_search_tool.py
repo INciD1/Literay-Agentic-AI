@@ -15,13 +15,33 @@ class TestSearchDocument(unittest.TestCase):
     @patch("literay_agent.tools.search.discoveryengine.SearchServiceClient")
     def test_success_returns_clauses(self, mock_client_cls):
         mock_result = MagicMock()
-        mock_result.document.derived_struct_data = {"snippet": "Tenant shall pay rent by the 1st."}
+        # Matches the real Vertex AI Search response shape that
+        # _extract_clause() parses: derived_struct_data.snippets is a list
+        # of {"snippet": "..."} dicts, not a single "snippet" key.
+        mock_result.document.derived_struct_data = {
+            "snippets": [{"snippet": "Tenant shall pay rent by the 1st."}]
+        }
         mock_client_cls.return_value.search.return_value = [mock_result]
 
         result = search_document("rent due date", "document_id")
 
         self.assertEqual(result["status"], "success")
         self.assertIn("Tenant shall pay rent by the 1st.", result["clauses"])
+
+    @patch("literay_agent.tools.search.discoveryengine.SearchServiceClient")
+    def test_success_prefers_extractive_answers(self, mock_client_cls):
+        # extractive_answers takes priority over snippets when both are present.
+        mock_result = MagicMock()
+        mock_result.document.derived_struct_data = {
+            "extractive_answers": [{"content": "Rent is due on the 1st of each month."}],
+            "snippets": [{"snippet": "Some less precise snippet."}],
+        }
+        mock_client_cls.return_value.search.return_value = [mock_result]
+
+        result = search_document("rent due date", "document_id")
+
+        self.assertEqual(result["status"], "success")
+        self.assertIn("Rent is due on the 1st of each month.", result["clauses"])
 
     @patch("literay_agent.tools.search.discoveryengine.SearchServiceClient")
     def test_failure_returns_error_status_not_raise(self, mock_client_cls):
@@ -41,13 +61,15 @@ class TestSearchDocument(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["clauses"], [])
 
-def test_filters_by_document_id(self, mock_client_cls):
-    mock_client_cls.return_value.search.return_value = []
-    search_document("rent due date", "document_id")
+    @patch("literay_agent.tools.search.discoveryengine.SearchServiceClient")
+    def test_filters_by_document_id(self, mock_client_cls):
+        mock_client_cls.return_value.search.return_value = []
 
-    call_args = mock_client_cls.return_value.search.call_args
-    request = call_args[0][0] if call_args[0] else call_args.kwargs["request"]
-    self.assertIn("document_id", str(request.filter))
+        search_document("rent due date", "document_id")
+
+        call_args = mock_client_cls.return_value.search.call_args
+        request = call_args[0][0] if call_args[0] else call_args.kwargs["request"]
+        self.assertIn("document_id", str(request.filter))
 
 
 if __name__ == "__main__":
