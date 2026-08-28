@@ -8,9 +8,12 @@ from __future__ import annotations
 
 from typing import TypedDict
 
+import datetime
+
 from google.adk.memory import VertexAiMemoryBankService
 from google.adk.memory.memory_entry import MemoryEntry
 from google.adk.tools import ToolContext
+from google.cloud import firestore
 from google.genai.types import Content, Part
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
@@ -111,11 +114,30 @@ async def log_quiz_result(
         outcome = "correctly" if was_correct else "incorrectly"
         text = f"User answered a {clause_type} clause comprehension question {outcome}."
         await _write_memory(service, user_id, text)
-        logger.info("log_quiz_result: written for user_id=%s", user_id)
-        return {"status": "success"}
+        logger.info("log_quiz_result: written to Memory Bank for user_id=%s", user_id)
     except Exception as exc:  # noqa: BLE001
-        logger.error("log_quiz_result failed for user_id=%s: %s", user_id, exc)
+        logger.error("log_quiz_result Memory Bank write failed for user_id=%s: %s", user_id, exc)
         return {"status": "error", "error_message": str(exc)}
+
+    # Also write a structured record to Firestore — Memory Bank is free-text
+    # (good for the agent's own recall), but the Progress view in the
+    # frontend needs queryable, aggregatable data, which only Firestore
+    # gives us cleanly.
+    try:
+        db = firestore.Client(project=settings.project_id)
+        db.collection("quiz_log").add({
+            "user_id": user_id,
+            "clause_type": clause_type,
+            "correct": was_correct,
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+        })
+    except Exception as exc:  # noqa: BLE001
+        # Don't fail the whole tool call over the Firestore side-write — the
+        # Memory Bank write (the part the agent's own behavior depends on)
+        # already succeeded above.
+        logger.error("log_quiz_result Firestore write failed for user_id=%s: %s", user_id, exc)
+
+    return {"status": "success"}
 
 
 def _extract_text(entry: MemoryEntry) -> str:
