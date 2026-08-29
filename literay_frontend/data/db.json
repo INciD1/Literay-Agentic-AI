@@ -10,17 +10,10 @@
   "documents": {
     "108893234944656199458": [
       {
-        "id": "bb497114-7f94-4fb0-b097-4c157bec4b84",
-        "filename": "Group2CV.pdf",
-        "size": 70605,
-        "uploadedAt": "2026-08-29T17:53:53.707Z",
-        "status": "indexed"
-      },
-      {
-        "id": "05bc78c6-8483-4239-b960-f7fd120da21f",
+        "id": "cff54b9f-8cda-4a2a-9450-a8295fffa01d",
         "filename": "th-TH-termsofuse-5.0.pdf",
         "size": 755746,
-        "uploadedAt": "2026-08-29T17:52:13.195Z",
+        "uploadedAt": "2026-08-29T20:23:17.541Z",
         "status": "indexed"
       }
     ]
@@ -28,40 +21,39 @@
   "sessions": {
     "108893234944656199458": [
       {
-        "id": "681e96c9-bc51-479f-99ca-87f4de571766",
-        "title": "เอกสารนี้เกี่ยวกับอะไรครับ",
-        "createdAt": "2026-08-29T18:00:46.414Z",
+        "id": "c5d88940-2320-4d7d-a0fa-5ada57547b42",
+        "title": "what is this document about",
+        "createdAt": "2026-08-29T20:04:39.778Z",
         "messages": [
           {
             "role": "user",
-            "text": "เอกสารนี้เกี่ยวกับอะไรครับ",
-            "ts": "2026-08-29T17:56:38.852Z"
+            "text": "what is this document about",
+            "ts": "2026-08-29T20:02:29.111Z"
           },
           {
             "role": "agent",
-            "text": "เอกสารนี้คือ **ประวัติการทำงานและประวัติทางธุรกิจ (Resume / Professional Profile) ของ Ryan Reynolds** ดารานักแสดงและนักธุรกิจชื่อดังครับ \n\nจากรายละเอียดในเอกสาร สามารถสรุปข้อมูลสำคัญได้ดังนี้ครับ:\n\n1. **ทักษะและความสามารถหลัก (Core Competencies):**\n   * การแสดงภาพยนตร์และโทรทัศน์ (ภาพยนตร์แอคชั่น, ตลก, และดราม่า)\n   * การเขียนบทและการผลิตภาพยนตร์\n   * การตลาดดิจิทัล การสร้างแบรนด์ และการวางกลยุทธ์โฆษณาแนวไวรัล\n   * การพัฒนาธุรกิจ การลงทุน (Angel Investing) และการวางกลยุทธ์ควบรวมกิจการ (M&A)\n\n2. **ผลงานทางธุรกิจและการลงทุนที่โดดเด่น:**\n   * **Mint Mobile:** ทำหน้าที่เป็นผู้ถือหุ้นใหญ่และผู้นำด้านการตลาดหลัก ช่วยผลักดันการเติบโตอย่างก้าวกระโดดจนนำไปสู่การควบรวมกิจการโดย T-Mobile ในปี 2023 ด้วยมูลค่า 1.35 พันล้านดอลลาร์สหรัฐ\n   * **Wrexham AFC:** เป็นเจ้าของร่วม (Co-owner) และผู้อำนวยการร่วมกับ Rob McElhenney ในการฟื้นฟูสโมสรฟุตบอล และร่วมเป็นผู้อำนวยการสร้างซีรีส์สารคดีชื่อดังอย่าง *Welcome to Wrexham*\n   * **Maximum Effort (ปี 2018 - ปัจจุบัน):** ร่วมก่อตั้งบริษัทโปรดักชันและเอเจนซี่การตลาดดิจิทัลที่เชี่ยวชาญด้าน \"Fastvertising\" (การสร้างสรรค์โฆษณาไวรัลที่รวดเร็วทันใจ)\n\n3. **รางวัลและเกียรติยศ:**\n   * ได้รับการจารึกชื่อลงบนดวงดาวในถนนฮอลลีวูด (Hollywood Walk of Fame) ในปี 2016\n\n---\n\n**คำถามวัดความเข้าใจสั้น ๆ ครับ:**\nตามเอกสารฉบับนี้ Ryan Reynolds ร่วมมือกับใครในการเป็นเจ้าของร่วม (Co-owner) และฟื้นฟูสโมสรฟุตบอล Wrexham AFC ครับ?",
-            "ts": "2026-08-29T18:00:39.808Z"
+            "text": "Based on the document retrieved, this is **Ubisoft's Terms of Service (ข้อตกลงการใช้งานของ Ubisoft)**. It is a legal contract that governs how users access and use Ubisoft's various products and services. \n\nBecause Terms of Service agreements can be quite complex, let's break down exactly what this document covers in plain language:\n\n1. **Scope of Services**: It applies to all \"Ubisoft Services\" (\"บริการ\"), which includes:\n   * Video games (whether on physical discs, downloaded, or streamed).\n   * Downloadable content (DLC) and Season Passes.\n   * Other software products, online services, and mobile services.\n2. **Account Creation**: To access certain content or play online, you are required to create a Ubisoft Account (or game-specific account) using accurate, complete, and current information (such as a valid email address).\n3. **Disclaimers & Liability**: It contains standard legal language stating that services are provided \"as-is\" and \"as available,\" meaning Ubisoft does not guarantee uninterrupted or error-free gameplay.\n4. **Arbitration and Disputes**: It includes clauses detailing how legal disputes are handled, including terms on how to opt-out of changes to the arbitration agreement.\n\nAre you reviewing this document to understand a specific situation, such as setting up your Ubisoft account, understanding rules of conduct, or looking into how disputes/arbitration are handled?\n\n***\n\n```quiz\n{\n  \"question\": \"According to the document, which of the following is included under 'Ubisoft Services'?\",\n  \"options\": [\n    \"Only physical game discs purchased in retail stores\",\n    \"Games, downloadable content (DLC), season passes, and online/mobile services\",\n    \"Only Ubisoft hardware and console regulatory filings\"\n  ]\n}\n```",
+            "ts": "2026-08-29T20:03:05.172Z"
           }
-        ],
-        "document_id": "bb497114-7f94-4fb0-b097-4c157bec4b84"
+        ]
       },
       {
-        "id": "85a4244c-ffc7-4ffa-b846-f2d19e433efc",
-        "title": "วิเคราห์เอกสารนี้ให้หน่อยว่า สิ่งที่สำคัญเเละควรใส่ใน CV คือ",
-        "createdAt": "2026-08-29T18:13:06.756Z",
+        "id": "a70120d2-c921-4e0e-9ebf-38ae77f04dd2",
+        "title": "เอกสารนี้เกี่ยวกับอะไร",
+        "createdAt": "2026-08-29T20:26:50.772Z",
         "messages": [
           {
             "role": "user",
-            "text": "วิเคราห์เอกสารนี้ให้หน่อยว่า สิ่งที่สำคัญเเละควรใส่ใน CV คืออะไรบ้าง",
-            "ts": "2026-08-29T18:11:32.014Z"
+            "text": "เอกสารนี้เกี่ยวกับอะไร",
+            "ts": "2026-08-29T20:26:18.397Z"
           },
           {
             "role": "agent",
-            "text": "จากการวิเคราะห์เอกสารฉบับนี้ ซึ่งเป็น **CV/Resume ของ Ryan Rodney Reynolds** (นักแสดง ผู้อำนวยการสร้างภาพยนตร์ และนักธุรกิจชื่อดัง) สิ่งสำคัญที่ถูกจัดวางและควรมีใน CV เพื่อช่วยให้ประวัติการทำงานดูโดดเด่นและเป็นมืออาชีพ มีองค์ประกอบหลักดังนี้ครับ:\n\n### 1. ข้อมูลส่วนตัวและการติดต่อ (Personal Information)\nเป็นส่วนที่ระบุตัวตนชัดเจนและช่องทางที่ผู้ว่าจ้างสามารถติดต่อกลับได้ทันที:\n*   **ชื่อเต็ม (Full Name):** Ryan Rodney Reynolds\n*   **สายอาชีพ/จุดเน้นหลัก (Profession):** Actor, Film Producer, Screenwriter, Entrepreneur & Marketer (เพื่อระบุความเชี่ยวชาญรอบด้านทันที)\n*   **ช่องทางติดต่อ (Contact Details):** อีเมล (`ryanreynolds007@gmail.com`) และเบอร์โทรศัพท์ (`+1 310-285-9000`)\n\n### 2. บทสรุปวิชาชีพ (Professional Summary)\nย่อหน้าสั้น ๆ ด้านบนสุดที่สรุปความสำเร็จและ \"จุดขาย\" (Value Proposition) ที่ดีที่สุดของตนเอง เพื่อสร้างความน่าประทับใจในแรกเห็น:\n*   แสดงจุดแข็งที่สะสมมา เช่น ประสบการณ์กว่า 3 ทศวรรษในวงการบันเทิงและธุรกิจ (three decades of success)\n*   สรุปความสามารถเด่น เช่น ความสำเร็จในการนำแฟรนไชส์ภาพยนตร์มูลค่าหลายพันล้าน หรือการสร้างสรรค์แคมเปญการตลาดแนวไวรัลด้วยการเล่าเรื่องเชิงสร้างสรรค์ (creative storytelling)\n\n### 3. ประสบการณ์การทำงานและบทบาทสำคัญ (Professional Experience / Key Roles)\nการอธิบายประวัติการทำงานโดยระบุตำแหน่ง ช่วงเวลา และผลลัพธ์ที่เป็นรูปธรรมชัดเจน:\n*   **ระบุชื่อบริษัท ตำแหน่ง และระยะเวลา:** เช่น *Co-Founder & Creative Lead – Maximum Effort (2018 – Present)* หรือ *Entrepreneur & Strategic Investor (2018 – Present)*\n*   **ใช้ผลลัพธ์ที่เป็นตัวเลขเชิงประจักษ์ (Quantified Achievements):** นี่คือส่วนสำคัญที่สุดใน CV ชุดนี้ โดยเขาไม่ได้บอกเพียงแค่ว่า \"เคยทำธุรกิจอะไร\" แต่ระบุผลสำเร็จที่วัดผลได้ชัดเจน เช่น:\n    *   **Aviation American Gin:** ร่วมลงทุนและดูแลการตลาด จนแบรนด์เติบโตและขายต่อให้ Diageo ในปี 2020 ได้ในมูลค่าสูงถึง **$610 ล้านดอลลาร์สหรัฐ**\n    *   **Mint Mobile:** เป็นเจ้าของหลักและพรีเซนเตอร์หลักที่ผลักดันการเติบโตแบบก้าวกระโดด จนนำไปสู่การขายกิจการให้ T-Mobile ในปี 2023 มูลค่า **$1.35 พันล้านดอลลาร์สหรัฐ**\n\n---\n\n**คำถามเพื่อเติมเต็มข้อมูลของคุณ (Clarifying Question):**\nคุณมีแผนที่จะนำโครงสร้างหรือแนวทางการเขียน CV นี้ไปปรับใช้กับสายงานเฉพาะด้านใดของคุณอยู่หรือเปล่าครับ? หากมี ผมสามารถช่วยแนะนำวิธีการเขียนอธิบายผลงานของคุณให้ดูน่าสนใจขึ้นได้ครับ\n\n**คำถามวัดความเข้าใจ (Comprehension Question):**\nจากข้อมูลใน CV ข้างต้น ในส่วนประสบการณ์การทำงานของ Ryan Reynolds มีการเน้นย้ำสิ่งใดเป็นพิเศษเพื่อสร้างความน่าเชื่อถือให้กับความสำเร็จในด้านธุรกิจของเขา?\n*   **ก)** ระบุจำนวนพนักงานที่เขาเป็นผู้ดูแลในแต่ละบริษัท\n*   **ข)** ระบุมูลค่าตัวเลขของการซื้อขายหรือควบรวมกิจการ (Acquisition / Sale value) ที่เกิดขึ้นจริง เช่น $610 ล้านดอลลาร์ และ $1.35 พันล้านดอลลาร์\n*   **ค)** ระบุเกรดเฉลี่ยสะสมและวุฒิการศึกษาที่เกี่ยวข้องด้านการบริหารธุรกิจ\n\n*พิมพ์คำตอบของคุณ (ก, ข หรือ ค) เพื่อให้ผมบันทึกผลการเรียนรู้และดำเนินขั้นตอนต่อไปได้เลยครับ!*",
-            "ts": "2026-08-29T18:13:05.255Z"
+            "text": "เอกสารนี้คือ **\"ข้อกำหนดการใช้งาน / เงื่อนไขการให้บริการของ Ubisoft\" (Ubisoft Terms of Service)** ครับ\n\nเนื่องจากคุณเคยมีประวัติความสับสนในเรื่องข้อกำหนดและเงื่อนไขการบริการมาก่อน ผมจะขออธิบายรายละเอียดของเอกสารนี้อย่างช้า ๆ และเป็นรูปธรรมเพื่อให้เข้าใจง่ายที่สุดนะครับ:\n\n### เอกสารนี้เกี่ยวกับอะไร?\nเอกสารนี้เป็นข้อตกลงทางกฎหมายระหว่างผู้ใช้บริการและบริษัท **Ubisoft** ซึ่งกำหนดสิทธิ์ หน้าที่ และเงื่อนไขต่าง ๆ ในการใช้บริการ โดยมีหัวข้อหลักดังนี้:\n\n1. **บริการของ Ubisoft (Ubisoft Services):** \n   ครอบคลุมทุกสิ่งที่ให้บริการโดย Ubisoft ได้แก่:\n   * เกมทุกประเภท (ทั้งแบบแผ่น ซอฟต์แวร์ดาวน์โหลด หรือระบบสตรีมมิง)\n   * เนื้อหาเสริมที่ดาวน์โหลดได้ (DLC) และบัตรผ่านฤดูกาล (Season Passes)\n   * ผลิตภัณฑ์ซอฟต์แวร์อื่น ๆ รวมถึงบริการออนไลน์และบริการบนมือถือทั้งหมด\n\n2. **การจัดการบัญชี (Ubisoft Account):**\n   ข้อกำหนดในการสร้างบัญชีเพื่อเข้าใช้งานบริการต่าง ๆ ของ Ubisoft โดยผู้ใช้ต้องให้ข้อมูลที่ถูกต้อง ครบถ้วน และเป็นปัจจุบัน (เช่น ที่อยู่อีเมลที่ใช้งานได้)\n\n3. **ข้อตกลงและการระงับข้อพิพาททางกฎหมาย:**\n   กฎเกณฑ์ทางกฎหมายเมื่อเกิดข้อพิพาทขึ้น เช่น การห้ามดำเนินคดีแบบกลุ่ม (Class Action) และการระงับข้อพิพาทผ่านกระบวนการอนุญาโตตุลาการ (Arbitration) ภายใต้กฎหมายของรัฐบาลกลางสหรัฐฯ (FAA)\n\n---\n\nหากคุณต้องการทราบรายละเอียดเกี่ยวกับหัวข้อใดเป็นพิเศษ (เช่น วิธีการสมัครบัญชี หรือเงื่อนไขการระงับข้อพิพาท) สามารถบอกได้เลยนะครับ\n\nเพื่อความมั่นใจว่าคุณเข้าใจภาพรวมของเอกสารนี้อย่างถูกต้อง รบกวนตอบคำถามสั้น ๆ ด้านล่างนี้หน่อยครับ:\n\n```quiz\n{\n  \"question\": \"ตามเอกสารนี้ ข้อใดคือสิ่งที่รวมอยู่ใน 'บริการของ Ubisoft' (Ubisoft Services)?\",\n  \"options\": [\n    \"เฉพาะซอฟต์แวร์เกมที่ซื้อเป็นแผ่นจากร้านค้าเท่านั้น ไม่รวมเนื้อหาออนไลน์\",\n    \"เกม ซอฟต์แวร์ เนื้อหาที่ดาวน์โหลดได้ (DLC) บัตรผ่านฤดูกาล และบริการออนไลน์/มือถือของ Ubisoft\"\n  ]\n}\n```",
+            "ts": "2026-08-29T20:26:48.967Z"
           }
         ],
-        "document_id": "bb497114-7f94-4fb0-b097-4c157bec4b84"
+        "document_id": "cff54b9f-8cda-4a2a-9450-a8295fffa01d"
       }
     ]
   }

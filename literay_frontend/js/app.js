@@ -1,687 +1,737 @@
-// ============================================================================
-// Backend connection config
-// ============================================================================
-const IS_LOCAL = location.hostname === "localhost" || location.hostname === "127.0.0.1";
-
-const CHAT_BACKEND_URL = IS_LOCAL
-  ? "http://localhost:8000"
-  : "https://REPLACE-WITH-adk-agent-service.a.run.app";
-
-const UPLOAD_BACKEND_URL = IS_LOCAL
-  ? "http://localhost:8001"
-  : "https://REPLACE-WITH-upload-service.a.run.app";
-
-const APP_NAME = "literay_agent";
-
-// Google Cloud Console -> APIs & Services -> Credentials -> OAuth client ID
-// -> Web application. Add http://localhost:5500 (and your hosted origin
-// later) under "Authorized JavaScript origins" or sign-in fails silently.
-const GOOGLE_CLIENT_ID = "799447425682-vdt9130tcr9mknqh3c39fvv3pqhoi30k.apps.googleusercontent.com";
-
-let USER_ID = null; // set after sign-in — persisted so memory stays tied to the same user
-let sessionId = null;
+// ===================== STATE =====================
+let currentUser = null;
+let currentSessionId = crypto.randomUUID();
+let currentSessionTitle = null; // null = ยังไม่ตั้งชื่อ (backend อาจตั้งชื่อ auto ให้)
 let activeDocumentId = null;
-const knownDocuments = []; // { id, filename } — documents successfully indexed this session
+let activeDocumentName = null;
+let cachedDocuments = [];       // เก็บ list เอกสารล่าสุดไว้ใช้ lookup (เช่นตอนเปิดประวัติแชท)
+let currentMessages = [];       // [{role: 'user'|'agent', text, ts}]
+let isHistoryLocked = false;    // true เมื่อกำลังดูแชทเก่าที่ผูกกับเอกสารใดเอกสารหนึ่ง
+let lastFailedMessage = null;   // เก็บข้อความล่าสุดที่ส่งไม่สำเร็จ ไว้ให้ปุ่ม "Try again" ใช้ resend
+let saveDebounceTimer = null;
 
-function registerDocument(documentId, filename) {
-  knownDocuments.push({ id: documentId, filename });
-  activeDocumentId = documentId;
-  renderDocList();
-  updateChatHeader();
-}
+// ===== view switching =====
+document.querySelectorAll('.nav-item').forEach(item => {
+  item.addEventListener('click', () => {
+    document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    item.classList.add('active');
+    document.getElementById('view-' + item.dataset.view).classList.add('active');
 
-function renderDocList() {
-  const list = document.getElementById("doc-list");
-  if (!list) return;
-  list.innerHTML = "";
-  knownDocuments.forEach((doc) => {
-    const item = document.createElement("div");
-    item.className = "doc-item" + (doc.id === activeDocumentId ? " active" : "");
-    item.innerHTML = `<div class="doc-name"></div><span class="status-pill status-done">indexed</span>`;
-    item.querySelector(".doc-name").textContent = doc.filename;
-    item.addEventListener("click", () => {
-      activeDocumentId = doc.id;
-      renderDocList();
-      updateChatHeader();
-      document.querySelector('.nav-item[data-view="chat"]')?.click();
-    });
-    list.appendChild(item);
+    if (item.dataset.view === 'progress') renderProgressDocList(cachedDocuments);
   });
-}
-
-function updateChatHeader() {
-  const doc = knownDocuments.find((d) => d.id === activeDocumentId);
-  const titleEl = document.querySelector(".chat-header .doc-title");
-  const subEl = document.querySelector(".chat-header .doc-sub");
-  if (doc && titleEl) titleEl.textContent = doc.filename;
-  if (doc && subEl) subEl.textContent = "Grounded via Vertex Search RAG · document ready";
-}
-
-// ============================================================================
-// Auth — Google Identity Services (client-side only for this demo; there is
-// no backend token verification yet).
-// ============================================================================
-function decodeJwtPayload(token) {
-  const base64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
-  return JSON.parse(decodeURIComponent(escape(atob(base64))));
-}
-
-function applySignedInUser(profile) {
-  USER_ID = profile.sub;
-  localStorage.setItem("literay_user_profile", JSON.stringify(profile));
-
-  document.getElementById("user-name").textContent = profile.name || profile.email || "Signed in";
-  const uidEl = document.getElementById("user-uid");
-  if (uidEl) uidEl.textContent = USER_ID.slice(0, 8);
-  const avatarEl = document.getElementById("user-avatar");
-  if (avatarEl) {
-    avatarEl.innerHTML = profile.picture
-      ? `<img src="${profile.picture}" alt="">`
-      : "";
-    if (!profile.picture) avatarEl.textContent = (profile.name || "?")[0].toUpperCase();
-  }
-
-  document.getElementById("auth-screen").hidden = true;
-  document.getElementById("app-root").hidden = false;
-  createSession().catch((err) => {
-    console.error("Could not create initial session — is the backend running?", err);
-    appendErrorCard("Couldn't connect to the backend. Make sure `adk api_server` is running.");
-  });
-}
-
-function handleGoogleCredential(response) {
-  try {
-    applySignedInUser(decodeJwtPayload(response.credential));
-  } catch (err) {
-    console.error("Failed to decode Google credential", err);
-  }
-}
-
-function initAuth() {
-  const saved = localStorage.getItem("literay_user_profile");
-  if (saved) {
-    try {
-      applySignedInUser(JSON.parse(saved));
-      return;
-    } catch (err) {
-      localStorage.removeItem("literay_user_profile");
-    }
-  }
-
-  if (window.google && !GOOGLE_CLIENT_ID.startsWith("REPLACE-WITH")) {
-    google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: handleGoogleCredential });
-    google.accounts.id.renderButton(document.getElementById("google-signin-slot"), {
-      theme: "outline",
-      size: "large",
-      width: 320,
-      text: "continue_with",
-    });
-  } else {
-    console.warn("GOOGLE_CLIENT_ID not configured or Google script not loaded yet.");
-    const fallback = document.getElementById("auth-fallback-btn");
-    if (fallback) {
-      fallback.hidden = false;
-      fallback.disabled = true;
-      fallback.style.opacity = "0.5";
-      fallback.style.cursor = "not-allowed";
-      fallback.textContent = "Google Sign-In not configured yet";
-    }
-  }
-}
-
-document.getElementById("user-chip-btn")?.addEventListener("click", () => {
-  if (!confirm("Sign out?")) return;
-  localStorage.removeItem("literay_user_profile");
-  location.reload();
 });
 
-// Google's script loads async — retry init briefly if it's not ready yet.
-function waitForGoogleThenInit(attempt = 0) {
-  if (window.google?.accounts?.id || attempt > 20) {
-    initAuth();
+// ===================== AUTH: user menu + logout =====================
+
+async function loadCurrentUser() {
+  try {
+    const res = await fetch('/api/auth/me');
+    if (!res.ok) {
+      window.location.href = '/login';
+      return;
+    }
+    const { user } = await res.json();
+    currentUser = user;
+    renderUser(user);
+  } catch (err) {
+    console.error('Failed to load current user:', err);
+  }
+}
+
+function renderUser(user) {
+  const nameEl = document.getElementById('user-name');
+  const emailEl = document.getElementById('user-email');
+  const avatarEl = document.getElementById('user-avatar');
+
+  nameEl.textContent = user.name || user.email || 'Signed in';
+  emailEl.textContent = user.email || '';
+
+  if (user.picture) {
+    avatarEl.innerHTML = `<img src="${user.picture}" alt="${user.name || ''}" referrerpolicy="no-referrer">`;
   } else {
-    setTimeout(() => waitForGoogleThenInit(attempt + 1), 150);
+    const initial = (user.name || user.email || '?').trim().charAt(0).toUpperCase();
+    avatarEl.textContent = initial;
   }
 }
-waitForGoogleThenInit();
 
-// ============================================================================
-// Mobile drawer navigation
-// ============================================================================
-const sidebarEl = document.getElementById("sidebar");
-const rightPanelEl = document.getElementById("right-panel");
-const scrimEl = document.getElementById("scrim");
-
-function closeDrawers() {
-  sidebarEl?.classList.remove("open");
-  rightPanelEl?.classList.remove("open");
-  scrimEl?.classList.remove("show");
-}
-function openDrawer(el) {
-  closeDrawers();
-  el?.classList.add("open");
-  scrimEl?.classList.add("show");
-}
-document.getElementById("hamburger-left")?.addEventListener("click", () => openDrawer(sidebarEl));
-document.getElementById("hamburger-right")?.addEventListener("click", () => openDrawer(rightPanelEl));
-scrimEl?.addEventListener("click", closeDrawers);
-
-function syncRightHamburger() {
-  const btn = document.getElementById("hamburger-right");
-  if (btn) btn.style.display = window.innerWidth <= 1000 ? "flex" : "none";
-}
-syncRightHamburger();
-window.addEventListener("resize", syncRightHamburger);
-
-// ============================================================================
-// Session creation
-// ============================================================================
-async function createSession() {
-  const newSessionId = `session_${Date.now()}`;
-  const res = await fetch(
-    `${CHAT_BACKEND_URL}/apps/${APP_NAME}/users/${USER_ID}/sessions/${newSessionId}`,
-    { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
-  );
-  if (!res.ok) throw new Error(`Failed to create session: ${res.status}`);
-  sessionId = newSessionId;
-  const idEl = document.querySelector(".session-id");
-  if (idEl) idEl.textContent = sessionId;
-  return sessionId;
+const userMenuTrigger = document.getElementById('user-menu-trigger');
+const userMenuDropdown = document.getElementById('user-menu-dropdown');
+if (userMenuTrigger) {
+  userMenuTrigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    userMenuDropdown.classList.toggle('open');
+  });
+  document.addEventListener('click', () => userMenuDropdown.classList.remove('open'));
 }
 
-// ============================================================================
-// Parsing /run events into what the UI needs (citations/memory come from the
-// tool RESULTS directly, not the model's prose; quiz is a parsed fenced block)
-// ============================================================================
-function extractFunctionResponsePayload(part) {
-  const fr = part.functionResponse || part.function_response;
-  if (!fr) return null;
-  const response = fr.response || {};
-  const payload = response.result !== undefined ? response.result : response;
-  return { name: fr.name, payload };
-}
-
-function parseAgentEvents(events) {
-  const citations = [];
-  let weakSpots = [];
-
-  for (const e of events) {
-    const parts = (e.content && e.content.parts) || [];
-    for (const p of parts) {
-      const fr = extractFunctionResponsePayload(p);
-      if (!fr) continue;
-      if (fr.name === "search_document" && fr.payload?.status === "success" && Array.isArray(fr.payload.clauses)) {
-        citations.push(...fr.payload.clauses.filter(Boolean));
-      }
-      if (fr.name === "get_document_metadata" && fr.payload?.status === "success" && Array.isArray(fr.payload.weak_spots)) {
-        weakSpots = fr.payload.weak_spots.filter(Boolean);
-      }
-    }
-  }
-
-  const textEvents = events.filter((e) => e.content?.parts?.some((p) => p.text));
-  const last = textEvents[textEvents.length - 1];
-  let rawText = last
-    ? last.content.parts.map((p) => p.text).filter(Boolean).join("\n")
-    : "(no response text — check the backend logs)";
-
-  let quiz = null;
-  const quizMatch = rawText.match(/```quiz\s*([\s\S]*?)```/);
-  if (quizMatch) {
+const logoutBtn = document.getElementById('logout-btn');
+if (logoutBtn) {
+  logoutBtn.addEventListener('click', async () => {
+    logoutBtn.disabled = true;
     try {
-      const parsed = JSON.parse(quizMatch[1].trim());
-      if (parsed.question && Array.isArray(parsed.options)) quiz = parsed;
-    } catch (err) {
-      console.warn("Failed to parse quiz block:", err, quizMatch[1]);
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } finally {
+      window.location.href = '/login';
     }
-    rawText = rawText.replace(quizMatch[0], "").trim();
-  }
-
-  return { replyText: rawText, quiz, citations: [...new Set(citations)], weakSpots };
-}
-
-async function sendMessageToAgent(text) {
-  if (!sessionId) await createSession();
-
-  // Silently attach the active document's real document_id so the user
-  // never has to know or type a UUID — the visible chat bubble still shows
-  // their original text (see appendUserBubble), only the backend call
-  // carries this extra context.
-  const augmentedText = activeDocumentId
-    ? `[Active document_id: ${activeDocumentId}] ${text}`
-    : text;
-
-  const res = await fetch(`${CHAT_BACKEND_URL}/run`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      app_name: APP_NAME,
-      user_id: USER_ID,
-      session_id: sessionId,
-      new_message: { role: "user", parts: [{ text: augmentedText }] },
-    }),
   });
-  if (!res.ok) throw new Error(`Agent request failed: ${res.status}`);
-  return parseAgentEvents(await res.json());
 }
 
-// ============================================================================
-// Rendering
-// ============================================================================
-function scrollToBottom() {
-  const scroll = document.getElementById("chat-scroll");
-  if (scroll) scroll.scrollTop = scroll.scrollHeight;
+// ===================== DOCUMENTS (sidebar list) =====================
+
+function formatBytes(bytes) {
+  if (!bytes && bytes !== 0) return '';
+  const mb = bytes / (1024 * 1024);
+  return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
-function appendUserBubble(text) {
-  const scroll = document.getElementById("chat-scroll");
-  const row = document.createElement("div");
-  row.className = "msg-row user";
-  row.innerHTML = `<div class="msg-avatar">${(USER_ID || "?")[0].toUpperCase()}</div><div class="bubble"></div>`;
-  row.querySelector(".bubble").textContent = text;
-  scroll.appendChild(row);
-  scrollToBottom();
+function formatDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-function appendThinkingRow() {
-  const scroll = document.getElementById("chat-scroll");
-  const row = document.createElement("div");
-  row.className = "thinking-row";
-  row.id = "active-thinking-row";
-  row.innerHTML = `<div class="thinking-chip">Thinking<span class="tdots"><span>•</span><span>•</span><span>•</span></span></div>`;
-  scroll.appendChild(row);
-  scrollToBottom();
-}
-function removeThinkingRow() {
-  document.getElementById("active-thinking-row")?.remove();
+function setActiveDocument(doc) {
+  if (isHistoryLocked) return; // กำลังดูประวัติแชทที่ล็อกเอกสารไว้ ห้ามสลับ
+  activeDocumentId = doc ? doc.id : null;
+  activeDocumentName = doc ? doc.filename : null;
+  document.getElementById('active-doc-title').textContent = doc ? doc.filename : 'No document selected';
+  document.getElementById('active-doc-sub').textContent = doc
+    ? 'Document indexed · grounded via Vertex Search RAG'
+    : 'Upload or select a document to ground answers in it';
+
+  document.querySelectorAll('#document-list .doc-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.docId === activeDocumentId);
+  });
+
+  renderQuizPanel(doc);
 }
 
-function buildCitationCardsHTML(citations) {
-  return citations.slice(0, 3).map(() => `
-      <div class="citation-card">
-        <div class="label">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
-          Cited from the document
-        </div>
-        <div class="quote"></div>
-      </div>`).join("");
-}
-function buildMemoryBadgeHTML(weakSpots) {
-  if (!weakSpots.length) return "";
-  return `
-    <div class="memory-badge">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/></svg>
-      <span><b>Remembered from before:</b> <span class="mem-text"></span></span>
-    </div>`;
+// ล็อกไว้กับเอกสารเดิมตอนเปิดประวัติแชท (ข้อ 12) — ปลดล็อกเมื่อกด "+ New session"
+function lockToDocument(docId, docName) {
+  isHistoryLocked = true;
+  activeDocumentId = docId || null;
+  activeDocumentName = docName || null;
+  document.getElementById('active-doc-title').textContent = docName || 'Unknown document';
+  document.getElementById('active-doc-sub').textContent = docId
+    ? 'Viewing a saved conversation · locked to this document'
+    : 'Viewing a saved conversation (no document was linked)';
+  document.getElementById('document-list').classList.add('locked');
+  document.querySelectorAll('#document-list .doc-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.docId === docId);
+  });
 }
 
-function renderMarkdown(text) {
-  // Agent replies are Markdown (headings, bold, lists). Parse to HTML, then
-  // sanitize — this is model-generated text, not raw third-party input, but
-  // sanitizing is cheap insurance against any stray HTML/script content.
-  if (window.marked && window.DOMPurify) {
-    return DOMPurify.sanitize(marked.parse(text));
+function unlockDocumentSelection() {
+  isHistoryLocked = false;
+  document.getElementById('document-list').classList.remove('locked');
+}
+
+async function deleteDocument(doc, btnEl) {
+  const ok = window.confirm(`Delete "${doc.filename}"? This can't be undone.`);
+  if (!ok) return;
+  btnEl.disabled = true;
+  try {
+    const res = await fetch(`/api/v1/documents/${doc.id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Delete failed');
+    if (activeDocumentId === doc.id) setActiveDocument(null);
+    refreshDocumentList();
+  } catch (err) {
+    console.error('Failed to delete document:', err);
+    alert("Couldn't delete this document. Please try again.");
+    btnEl.disabled = false;
   }
-  // Fallback if the CDN scripts failed to load — at least don't break.
-  const div = document.createElement("div");
-  div.textContent = text;
-  return div.innerHTML;
 }
 
-function appendAgentBubble({ replyText, citations, weakSpots }) {
-  const scroll = document.getElementById("chat-scroll");
-  const row = document.createElement("div");
-  row.className = "msg-row agent";
-  row.innerHTML = `
-    <div class="msg-avatar">A</div>
-    <div><div class="bubble">
-      <div class="reply-text markdown-body"></div>
-      ${buildCitationCardsHTML(citations)}
-      ${buildMemoryBadgeHTML(weakSpots)}
-    </div></div>`;
-  row.querySelector(".reply-text").innerHTML = renderMarkdown(replyText);
-  row.querySelectorAll(".citation-card .quote").forEach((el, i) => { el.textContent = `"${citations[i]}"`; });
-  const memText = row.querySelector(".memory-badge .mem-text");
-  if (memText) memText.textContent = weakSpots.join(" ");
-  scroll.appendChild(row);
-  scrollToBottom();
-}
+function renderDocumentList(documents) {
+  cachedDocuments = documents || [];
+  const list = document.getElementById('document-list');
+  const emptyState = document.getElementById('document-list-empty');
+  list.querySelectorAll('.doc-item').forEach(el => el.remove());
 
-function appendQuizCard(quiz, onAnswer) {
-  const scroll = document.getElementById("chat-scroll");
-  const card = document.createElement("div");
-  card.className = "quiz-card";
-  card.innerHTML = `
-    <div class="quiz-head">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
-      Comprehension check
-    </div>
-    <div class="quiz-body"><div class="quiz-q"></div><div class="quiz-options"></div></div>`;
-  card.querySelector(".quiz-q").textContent = quiz.question;
-  const optionsEl = card.querySelector(".quiz-options");
-  quiz.options.forEach((optionText) => {
-    const btn = document.createElement("button");
-    btn.className = "quiz-opt";
-    btn.type = "button";
-    btn.textContent = optionText;
-    btn.addEventListener("click", () => {
-      if (card.dataset.answered) return;
-      card.dataset.answered = "true";
-      optionsEl.querySelectorAll(".quiz-opt").forEach((o) => (o.disabled = true));
-      btn.style.borderColor = "var(--blue)";
-      onAnswer(optionText);
+  if (!documents.length) {
+    if (emptyState) emptyState.style.display = 'block';
+    if (!isHistoryLocked) setActiveDocument(null);
+    return;
+  }
+  if (emptyState) emptyState.style.display = 'none';
+
+  documents.forEach(doc => {
+    const el = document.createElement('div');
+    el.className = 'doc-item';
+    el.dataset.docId = doc.id;
+    el.innerHTML = `
+      <div class="doc-item-top">
+        <div class="doc-name">${doc.filename}</div>
+        <button class="doc-delete-btn" type="button" title="Delete document" aria-label="Delete document">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0l-1 14a2 2 0 01-2 2H7a2 2 0 01-2-2L4 6h16z"/></svg>
+        </button>
+      </div>
+      <div class="doc-meta">Uploaded ${formatDate(doc.uploadedAt)}${doc.size ? ' · ' + formatBytes(doc.size) : ''}</div>
+      <span class="status-pill status-${doc.status === 'indexed' ? 'done' : 'processing'}">${doc.status}</span>
+    `;
+    el.addEventListener('click', () => setActiveDocument(doc));
+    el.querySelector('.doc-delete-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteDocument(doc, e.currentTarget);
     });
-    optionsEl.appendChild(btn);
+    list.appendChild(el);
   });
-  scroll.appendChild(card);
-  scrollToBottom();
+
+  if (!activeDocumentId && !isHistoryLocked) {
+    setActiveDocument(documents[0]);
+  }
 }
 
-function appendErrorCard(message) {
-  const scroll = document.getElementById("chat-scroll");
-  const err = document.createElement("div");
-  err.className = "error-card";
+async function refreshDocumentList() {
+  try {
+    const res = await fetch('/api/v1/documents');
+    if (!res.ok) return;
+    const { documents } = await res.json();
+    renderDocumentList(documents);
+  } catch (err) {
+    console.error('Failed to load documents:', err);
+  }
+}
+
+// ===================== CHAT =====================
+const chatInput = document.getElementById('chat-input');
+const sendButton = document.getElementById('send-btn');
+const chatScroll = document.getElementById('chat-scroll');
+
+function appendMessage(role, text, { record = true } = {}) {
+  const row = document.createElement('div');
+  row.className = `msg-row ${role}`;
+  const avatar = role === 'user' ? (currentUser?.name?.charAt(0).toUpperCase() || 'U') : 'A';
+  row.innerHTML = `<div class="msg-avatar">${avatar}</div><div class="bubble"></div>`;
+
+  const bubble = row.querySelector('.bubble');
+  if (role === 'agent' && window.marked && window.DOMPurify) {
+    // ข้อความจาก agent เป็น markdown — แปลงเป็น HTML แล้ว sanitize ก่อนแสดงผล
+    bubble.innerHTML = DOMPurify.sanitize(marked.parse(text));
+  } else {
+    bubble.textContent = text;
+  }
+
+  chatScroll.appendChild(row);
+  chatScroll.scrollTop = chatScroll.scrollHeight;
+
+  if (record) {
+    currentMessages.push({ role, text, ts: new Date().toISOString() });
+    scheduleAutoSave();
+  }
+}
+
+function showErrorCard(message) {
+  const err = document.createElement('div');
+  err.className = 'error-card';
   err.innerHTML = `
     <div class="err-title">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4M12 16h.01"/><circle cx="12" cy="12" r="9"/></svg>
       Couldn't reach the assistant
     </div>
-    <div style="font-size:12.5px;color:var(--navy);"></div>`;
-  err.querySelector("div:last-child").textContent = message;
-  scroll.appendChild(err);
-  scrollToBottom();
+    <div style="font-size:12.5px;color:var(--navy);">${message}</div>
+    <button class="btn btn-ghost retry-btn" style="align-self:flex-start;">Try again</button>
+  `;
+  err.querySelector('.retry-btn').addEventListener('click', () => {
+    err.remove();
+    if (lastFailedMessage) handleSend(lastFailedMessage);
+  });
+  chatScroll.appendChild(err);
+  chatScroll.scrollTop = chatScroll.scrollHeight;
 }
 
-async function runTurn(text) {
-  appendThinkingRow();
+async function sendChatMessage(message) {
+  const response = await fetch('/api/v1/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      session_id: currentSessionId,
+      document_id: activeDocumentId,
+      message
+    })
+  });
+
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || 'The assistant backend returned an error.');
+  }
+  return payload.message;
+}
+
+async function handleSend(retryMessage) {
+  const message = retryMessage ?? chatInput?.value.trim();
+  if (!message) return;
+
+  if (!retryMessage) {
+    appendMessage('user', message);
+    chatInput.value = '';
+    autoResizeInput();
+  }
+
   try {
-    const parsed = await sendMessageToAgent(text);
-    removeThinkingRow();
-    appendAgentBubble(parsed);
-    if (parsed.quiz) {
-      appendQuizCard(parsed.quiz, (chosenAnswer) => {
-        appendUserBubble(chosenAnswer);
-        runTurn(chosenAnswer);
-      });
-    }
-  } catch (err) {
-    removeThinkingRow();
-    appendErrorCard("The server is responding slower than usual, or the backend isn't reachable. Try again — nothing about your document has been lost.");
-    console.error(err);
+    const reply = await sendChatMessage(message);
+    lastFailedMessage = null;
+    appendMessage('agent', reply);
+  } catch (error) {
+    console.error('Chat request failed:', error);
+    lastFailedMessage = message;
+    showErrorCard('The server is responding slower than usual, or is temporarily unreachable. Nothing about your document has been lost.');
   }
 }
 
-// ============================================================================
-// Composer wiring
-// ============================================================================
-const composerInput = document.querySelector(".composer input[type=text]");
-const sendBtn = document.querySelector(".composer .icon-btn:not(.ghost)");
-const attachBtn = document.querySelector(".composer .icon-btn.ghost");
+if (sendButton) sendButton.addEventListener('click', () => handleSend());
 
-async function handleSend() {
-  const text = composerInput.value.trim();
-  if (!text) return;
-  composerInput.value = "";
-  composerInput.disabled = true;
-  appendUserBubble(text);
-  await runTurn(text);
-  composerInput.disabled = false;
-  composerInput.focus();
+// ===== textarea: Enter = ส่ง, Shift+Enter = ขึ้นบรรทัดใหม่, auto-resize (ข้อ 7) =====
+function autoResizeInput() {
+  if (!chatInput) return;
+  chatInput.style.height = 'auto';
+  chatInput.style.height = Math.min(chatInput.scrollHeight, 140) + 'px';
 }
-sendBtn?.addEventListener("click", handleSend);
-composerInput?.addEventListener("keydown", (e) => { if (e.key === "Enter") handleSend(); });
+if (chatInput) {
+  chatInput.addEventListener('input', autoResizeInput);
+  chatInput.addEventListener('keydown', event => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      handleSend();
+    }
+  });
+}
 
-document.querySelector(".session-block .btn-primary")?.addEventListener("click", async () => {
-  document.getElementById("chat-scroll").innerHTML = "";
-  await createSession();
-});
+// ===================== AUTO-SAVE ที่คุยอยู่ (ข้อ 1) =====================
+// เดิมต้องกด "+ New session" ถึงจะเซฟลง history — ตอนนี้ auto-save แบบ debounce
+// ทุกครั้งที่มีข้อความใหม่ ผ่าน endpoint เดิม (ฝั่ง backend ต้อง "upsert" ตาม session_id
+// ไม่ใช่สร้างแถวใหม่ซ้ำทุกครั้งที่เรียก — ถ้ายังไม่รองรับ ต้องแก้ backend ตรงนี้ด้วย)
+function scheduleAutoSave() {
+  if (isHistoryLocked) return; // กำลังดูของเก่าอยู่ ไม่ต้อง autosave ทับ
+  clearTimeout(saveDebounceTimer);
+  saveDebounceTimer = setTimeout(saveCurrentSession, 1500);
+}
 
-// ============================================================================
-// History
-// ============================================================================
-const historyBtn = document.querySelector(".session-block .btn-ghost");
-
-async function fetchSessionList() {
-  const res = await fetch(`${CHAT_BACKEND_URL}/apps/${APP_NAME}/users/${USER_ID}/sessions`);
-  if (!res.ok) throw new Error(`Failed to list sessions: ${res.status}`);
-  return res.json();
-}
-async function loadSessionMessages(targetSessionId) {
-  const res = await fetch(`${CHAT_BACKEND_URL}/apps/${APP_NAME}/users/${USER_ID}/sessions/${targetSessionId}`);
-  if (!res.ok) throw new Error(`Failed to load session: ${res.status}`);
-  return (await res.json()).events || [];
-}
-function closeHistoryDropdown() {
-  document.getElementById("history-dropdown")?.remove();
-}
-async function openHistoryDropdown() {
-  closeHistoryDropdown();
-  const dropdown = document.createElement("div");
-  dropdown.id = "history-dropdown";
-  dropdown.style.cssText = "background:var(--white);border:1px solid var(--border);border-radius:10px;margin-top:8px;padding:6px;max-height:220px;overflow-y:auto;font-size:12.5px;";
-  dropdown.textContent = "Loading sessions...";
-  historyBtn.closest(".session-block").appendChild(dropdown);
+async function saveCurrentSession() {
+  if (!currentMessages.length) return;
   try {
-    const sessions = await fetchSessionList();
-    dropdown.innerHTML = "";
-    if (!sessions.length) { dropdown.textContent = "No past sessions yet."; return; }
-    sessions.forEach((s) => {
-      const id = s.id || s.sessionId || s.session_id;
-      const row = document.createElement("button");
-      row.className = "btn btn-ghost btn-block";
-      row.style.cssText = "text-align:left;margin-bottom:4px;font-family:'IBM Plex Mono',monospace;font-size:11.5px;";
-      row.textContent = id;
-      row.addEventListener("click", async () => {
-        sessionId = id;
-        document.querySelector(".session-id").textContent = sessionId;
-        document.getElementById("chat-scroll").innerHTML = "";
-        try {
-          const parsed = parseAgentEvents(await loadSessionMessages(id));
-          if (parsed.replyText) appendAgentBubble(parsed);
-        } catch (err) {
-          appendErrorCard("Could not load that session's messages.");
-          console.error(err);
-        }
-        closeHistoryDropdown();
-      });
-      dropdown.appendChild(row);
+    await fetch('/api/v1/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: currentSessionId,
+        title: currentSessionTitle,
+        document_id: activeDocumentId,
+        messages: currentMessages
+      })
     });
   } catch (err) {
-    dropdown.textContent = "Could not load session history.";
-    console.error(err);
+    console.error('Auto-save failed:', err);
   }
 }
-historyBtn?.addEventListener("click", () => {
-  if (document.getElementById("history-dropdown")) closeHistoryDropdown();
-  else openHistoryDropdown();
+
+// เผื่อผู้ใช้ปิดแท็บ/เบราว์เซอร์กะทันหัน ยิง save ครั้งสุดท้ายแบบไม่บล็อกหน้าเว็บ
+window.addEventListener('pagehide', () => {
+  if (!currentMessages.length || isHistoryLocked) return;
+  const body = JSON.stringify({
+    session_id: currentSessionId,
+    title: currentSessionTitle,
+    document_id: activeDocumentId,
+    messages: currentMessages
+  });
+  navigator.sendBeacon?.('/api/v1/sessions', new Blob([body], { type: 'application/json' }));
 });
 
-// ============================================================================
-// Upload wiring
-// ============================================================================
-const dropzone = document.querySelector(".dropzone");
-const uploadWrap = document.querySelector(".upload-wrap");
-let uploadItemCounter = 0;
+// ===================== NEW SESSION =====================
 
-function renderUploadProgressItem(filename) {
-  const uploadItemId = `upload-item-${Date.now()}-${uploadItemCounter++}`;
-  const item = document.createElement("div");
-  item.className = "upload-item";
-  item.id = uploadItemId;
-  item.innerHTML = `
-    <div style="flex:1;">
-      <div style="display:flex;justify-content:space-between;gap:8px;">
-        <div style="font-size:13px;font-weight:500;"></div>
-        <div class="progress-pct" style="font-size:11px;color:var(--text-muted);font-family:'IBM Plex Mono',monospace;flex-shrink:0;">15%</div>
-      </div>
-      <div class="upload-status" style="font-size:11.5px;color:var(--text-muted);margin-top:2px;">Uploading...</div>
-      <div class="progress-track"><div class="progress-fill" style="width:15%;"></div></div>
-    </div>
-    <span class="status-pill status-processing">uploading</span>`;
-  item.querySelector("div div").textContent = filename;
-  uploadWrap.appendChild(item);
-  return uploadItemId;
+function resetChatUI() {
+  chatScroll.innerHTML = '';
+  currentMessages = [];
+  currentSessionId = crypto.randomUUID();
+  currentSessionTitle = null;
+  lastFailedMessage = null;
+  document.getElementById('current-session-id').textContent = currentSessionId.slice(0, 8) + '…';
+  unlockDocumentSelection();
 }
 
-function setUploadProgress(uploadItemId, pct) {
-  const item = document.getElementById(uploadItemId);
-  const fillEl = item?.querySelector(".progress-fill");
-  const pctEl = item?.querySelector(".progress-pct");
-  if (fillEl) fillEl.style.width = `${pct}%`;
-  if (pctEl) pctEl.textContent = `${Math.round(pct)}%`;
-}
-
-async function pollIndexingStatus(documentId, uploadItemId) {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    await new Promise((r) => setTimeout(r, 5000));
-    if (!document.getElementById(uploadItemId)) return;
-    try {
-      const res = await fetch(`${UPLOAD_BACKEND_URL}/status/${documentId}`);
-      if (!res.ok) continue;
-      const data = await res.json();
-      const freshItemEl = document.getElementById(uploadItemId);
-      if (!freshItemEl) return;
-      if (data.indexing_status === "indexed") {
-        const statusEl = freshItemEl.querySelector(".upload-status");
-        const pillEl = freshItemEl.querySelector(".status-pill");
-        if (statusEl) statusEl.textContent = "Indexed and ready";
-        if (pillEl) { pillEl.textContent = "indexed"; pillEl.className = "status-pill status-done"; }
-        setUploadProgress(uploadItemId, 100);
-        registerDocument(documentId, data.original_file_name || "Untitled document");
-        return;
+const newSessionBtn = document.getElementById('new-session-btn');
+if (newSessionBtn) {
+  newSessionBtn.addEventListener('click', async () => {
+    if (currentMessages.length > 0 && !isHistoryLocked) {
+      newSessionBtn.disabled = true;
+      newSessionBtn.textContent = 'Saving…';
+      try {
+        await saveCurrentSession();
+      } finally {
+        newSessionBtn.disabled = false;
+        newSessionBtn.textContent = '+ New session';
       }
-      setUploadProgress(uploadItemId, Math.min(15 + attempt * 3, 90));
-    } catch (err) {
-      console.warn("status poll failed", err);
     }
-  }
-  document.getElementById(uploadItemId)?.querySelector(".upload-status")
-    && (document.getElementById(uploadItemId).querySelector(".upload-status").textContent = "Still indexing — check back shortly, or verify in Console.");
+    resetChatUI();
+  });
 }
 
-async function uploadFile(file) {
-  console.log("[uploadFile] starting", file.name, file.size, "bytes");
-  const uploadItemId = renderUploadProgressItem(file.name);
+// ===================== HISTORY MODAL =====================
 
-  const setField = (selector, prop, value) => {
-    const item = document.getElementById(uploadItemId);
-    const el = item?.querySelector(selector);
-    if (!el) { console.warn(`[uploadFile] missing "${selector}"`); return; }
-    el[prop] = value;
-  };
+const historyModal = document.getElementById('history-modal');
+const historyBtn = document.getElementById('history-btn');
+const historyCloseBtn = document.getElementById('history-close-btn');
+const historyList = document.getElementById('history-list');
 
-  const slowWarningTimer = setTimeout(() => {
-    setField(".upload-status", "textContent", "Still uploading... this is taking longer than usual.");
-  }, 15000);
+function openHistoryModal() {
+  historyModal.classList.add('open');
+  loadHistoryList();
+}
+function closeHistoryModal() {
+  historyModal.classList.remove('open');
+}
+if (historyBtn) historyBtn.addEventListener('click', openHistoryModal);
+if (historyCloseBtn) historyCloseBtn.addEventListener('click', closeHistoryModal);
+if (historyModal) {
+  historyModal.addEventListener('click', (e) => {
+    if (e.target === historyModal) closeHistoryModal();
+  });
+}
 
-  const formData = new FormData();
-  formData.append("file", file);
-  formData.append("user_id", USER_ID);
-
+async function renameSession(session, titleEl) {
+  const newTitle = window.prompt('Rename this conversation:', session.title || '');
+  if (newTitle === null || !newTitle.trim() || newTitle.trim() === session.title) return;
   try {
-    const res = await fetch(`${UPLOAD_BACKEND_URL}/ingest`, { method: "POST", body: formData });
-    clearTimeout(slowWarningTimer);
-    if (!res.ok) throw new Error(`${res.status} ${await res.text().catch(() => "")}`);
-    const data = await res.json();
-    console.log("[uploadFile] success, document_id =", data.document_id);
-    setField(".upload-status", "textContent", "Processing — building the RAG index...");
-    setField(".status-pill", "textContent", "processing");
-    setUploadProgress(uploadItemId, 40);
-    pollIndexingStatus(data.document_id, uploadItemId);
+    const res = await fetch(`/api/v1/sessions/${session.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: newTitle.trim() })
+    });
+    if (!res.ok) throw new Error('Rename failed');
+    session.title = newTitle.trim();
+    titleEl.textContent = session.title;
+    if (session.id === currentSessionId) currentSessionTitle = session.title;
   } catch (err) {
-    clearTimeout(slowWarningTimer);
-    console.error("[uploadFile] failed:", err);
-    setField(".upload-status", "textContent", `Upload failed: ${err.message}. Check upload_server.py is running on port 8001.`);
-    setField(".status-pill", "textContent", "error");
+    console.error('Failed to rename session:', err);
+    alert("Couldn't rename this conversation. Please try again.");
   }
 }
 
-if (dropzone) {
-  const fileInput = document.createElement("input");
-  fileInput.type = "file";
-  fileInput.accept = ".pdf,.jpg,.jpeg,.png";
-  fileInput.style.display = "none";
-  dropzone.appendChild(fileInput);
-  dropzone.addEventListener("click", () => fileInput.click());
-  fileInput.addEventListener("change", () => { if (fileInput.files[0]) uploadFile(fileInput.files[0]); });
-  dropzone.addEventListener("dragover", (e) => { e.preventDefault(); dropzone.style.borderColor = "var(--blue)"; });
-  dropzone.addEventListener("dragleave", () => { dropzone.style.borderColor = "var(--sea)"; });
-  dropzone.addEventListener("drop", (e) => {
-    e.preventDefault();
-    dropzone.style.borderColor = "var(--sea)";
-    if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]);
-  });
-}
-
-if (attachBtn) {
-  const chatFileInput = document.createElement("input");
-  chatFileInput.type = "file";
-  chatFileInput.accept = ".pdf,.jpg,.jpeg,.png";
-  chatFileInput.style.display = "none";
-  document.body.appendChild(chatFileInput);
-  attachBtn.addEventListener("click", () => chatFileInput.click());
-  chatFileInput.addEventListener("change", async () => {
-    const file = chatFileInput.files[0];
-    chatFileInput.value = "";
-    if (!file) return;
-    document.querySelector('.nav-item[data-view="upload"]')?.click();
-    await uploadFile(file);
-  });
-}
-
-// ============================================================================
-// Progress view — reads the /progress/{user_id} summary built from
-// quiz_log entries in Firestore.
-// ============================================================================
-async function loadProgressView() {
-  const container = document.getElementById("progress-content");
-  if (!container) return;
-  container.textContent = "Loading...";
+async function deleteSession(session, rowEl) {
+  const ok = window.confirm('Delete this conversation? This can\'t be undone.');
+  if (!ok) return;
   try {
-    const res = await fetch(`${UPLOAD_BACKEND_URL}/progress/${USER_ID}`);
-    if (!res.ok) throw new Error(`${res.status}`);
-    const data = await res.json();
-    const clauses = Object.entries(data.clauses || {});
+    const res = await fetch(`/api/v1/sessions/${session.id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Delete failed');
+    rowEl.remove();
+    if (!historyList.querySelector('.history-item')) {
+      historyList.innerHTML = '<div class="empty-state">No saved conversations yet — start chatting to save one here.</div>';
+    }
+  } catch (err) {
+    console.error('Failed to delete session:', err);
+    alert("Couldn't delete this conversation. Please try again.");
+  }
+}
 
-    if (!clauses.length) {
-      container.textContent = "No comprehension checks answered yet — answer a quiz question in the chat to see your progress here.";
+async function loadHistoryList() {
+  historyList.innerHTML = '<div class="empty-state">Loading…</div>';
+  try {
+    const res = await fetch('/api/v1/sessions');
+    const { sessions } = await res.json();
+    if (!sessions.length) {
+      historyList.innerHTML = '<div class="empty-state">No saved conversations yet — start chatting to save one here.</div>';
       return;
     }
-
-    container.innerHTML = "";
-    clauses
-      .sort((a, b) => a[1].correct / a[1].total - b[1].correct / b[1].total) // weakest first
-      .forEach(([clauseType, stats]) => {
-        const pct = Math.round((stats.correct / stats.total) * 100);
-        const color = pct >= 80 ? "var(--sage)" : pct >= 50 ? "var(--brass)" : "var(--terracotta)";
-        const label = pct >= 80 ? "Strong" : pct >= 50 ? "Moderate" : "Weak";
-        const labelColor = pct >= 80 ? "var(--sage-deep)" : pct >= 50 ? "var(--brass-deep)" : "var(--terracotta-deep)";
-
-        const row = document.createElement("div");
-        row.className = "clause-row";
-        row.innerHTML = `
-          <div class="clause-top">
-            <span class="clause-name"></span>
-            <span style="color:${labelColor};">${label} — ${stats.correct}/${stats.total} correct</span>
-          </div>
-          <div class="bar-track"><div class="bar-fill" style="width:${pct}%;background:${color};"></div></div>`;
-        row.querySelector(".clause-name").textContent = clauseType;
-        container.appendChild(row);
+    historyList.innerHTML = '';
+    sessions.forEach(session => {
+      const item = document.createElement('div'); // div แทน button เพราะข้างในมีปุ่มซ้อนอีกที
+      item.className = 'history-item';
+      item.tabIndex = 0;
+      item.innerHTML = `
+        <div class="history-item-title">${session.title || 'Untitled conversation'}</div>
+        <div class="history-item-meta">${formatDate(session.createdAt)} · ${session.messageCount} messages</div>
+        <div class="history-item-actions">
+          <button class="history-action-btn rename-btn" type="button" title="Rename" aria-label="Rename conversation">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+          </button>
+          <button class="history-action-btn delete-btn" type="button" title="Delete" aria-label="Delete conversation">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0l-1 14a2 2 0 01-2 2H7a2 2 0 01-2-2L4 6h16z"/></svg>
+          </button>
+        </div>
+      `;
+      item.addEventListener('click', () => loadSessionIntoChat(session.id));
+      item.querySelector('.rename-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        renameSession(session, item.querySelector('.history-item-title'));
       });
+      item.querySelector('.delete-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        deleteSession(session, item);
+      });
+      historyList.appendChild(item);
+    });
   } catch (err) {
-    console.error("[loadProgressView] failed", err);
-    container.textContent = "Couldn't load progress data. Check that upload_server.py is running.";
+    console.error('Failed to load history:', err);
+    historyList.innerHTML = '<div class="empty-state">Couldn\'t load history right now.</div>';
   }
 }
 
-// ===== view switching =====
-document.querySelectorAll(".nav-item").forEach((item) => {
-  item.addEventListener("click", () => {
-    document.querySelectorAll(".nav-item").forEach((i) => i.classList.remove("active"));
-    document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
-    item.classList.add("active");
-    document.getElementById("view-" + item.dataset.view).classList.add("active");
-    closeDrawers();
-    if (item.dataset.view === "progress") loadProgressView();
+async function loadSessionIntoChat(sessionId) {
+  try {
+    const res = await fetch(`/api/v1/sessions/${sessionId}`);
+    if (!res.ok) throw new Error('Session not found.');
+    const session = await res.json();
+
+    chatScroll.innerHTML = '';
+    currentMessages = [];
+    session.messages.forEach(m => appendMessage(m.role, m.text, { record: false }));
+    currentMessages = session.messages.slice();
+    currentSessionId = session.id;
+    currentSessionTitle = session.title || null;
+    document.getElementById('current-session-id').textContent = currentSessionId.slice(0, 8) + '…';
+
+    // ล็อกไว้กับเอกสารเดิมของแชทนี้ (ข้อ 12) — ต้องมี session.document_id / documentName
+    // จาก backend ด้วย ถ้ายังไม่ส่งมา ต้องเพิ่มฟิลด์นี้ใน endpoint GET /api/v1/sessions/:id
+    if (session.document_id) {
+      const doc = cachedDocuments.find(d => d.id === session.document_id);
+      lockToDocument(session.document_id, doc ? doc.filename : session.document_name || 'Linked document');
+    } else {
+      lockToDocument(null, null);
+    }
+
+    closeHistoryModal();
+    document.querySelector('.nav-item[data-view="chat"]').click();
+  } catch (err) {
+    console.error('Failed to reopen session:', err);
+  }
+}
+
+// ===================== QUIZ PANEL (ข้อ 5) =====================
+// ต้องมี backend endpoint: GET /api/v1/documents/:id/quiz -> { questions: [{ question, options: [...], correctIndex }] }
+// ถ้ายังไม่มี endpoint นี้ ปุ่ม "Generate quiz" จะโชว์ข้อความแจ้งว่ายังใช้งานไม่ได้ แทนที่จะพัง
+
+function renderQuizPanel(doc) {
+  const panel = document.getElementById('quiz-panel');
+  if (!doc) {
+    panel.innerHTML = '<div class="empty-state">Select a document to generate a quiz from it.</div>';
+    return;
+  }
+  panel.innerHTML = `
+    <button class="btn btn-primary quiz-generate-btn" type="button">Generate quiz from "${doc.filename}"</button>
+    <div id="quiz-panel-body"></div>
+  `;
+  panel.querySelector('.quiz-generate-btn').addEventListener('click', () => loadQuiz(doc));
+}
+
+async function loadQuiz(doc) {
+  const body = document.getElementById('quiz-panel-body');
+  body.innerHTML = '<div class="empty-state">Generating questions…</div>';
+  try {
+    const res = await fetch(`/api/v1/documents/${doc.id}/quiz`);
+    if (!res.ok) throw new Error('Not available');
+    const { questions } = await res.json();
+    if (!questions || !questions.length) {
+      body.innerHTML = '<div class="empty-state">No quiz questions available for this document yet.</div>';
+      return;
+    }
+    body.innerHTML = '';
+    questions.forEach((q, qi) => {
+      const qEl = document.createElement('div');
+      qEl.className = 'quiz-q-panel';
+      qEl.innerHTML = `<b>Q${qi + 1}.</b> ${q.question}`;
+      const optsWrap = document.createElement('div');
+      q.options.forEach((opt, oi) => {
+        const optBtn = document.createElement('button');
+        optBtn.className = 'quiz-opt-panel';
+        optBtn.type = 'button';
+        optBtn.textContent = opt;
+        optBtn.addEventListener('click', () => {
+          if (optsWrap.dataset.answered) return;
+          optsWrap.dataset.answered = 'true';
+          optsWrap.querySelectorAll('.quiz-opt-panel').forEach((el, i) => {
+            if (i === q.correctIndex) el.classList.add('correct');
+          });
+          if (oi !== q.correctIndex) optBtn.classList.add('wrong');
+        });
+        optsWrap.appendChild(optBtn);
+      });
+      body.appendChild(qEl);
+      body.appendChild(optsWrap);
+    });
+  } catch (err) {
+    console.error('Quiz not available:', err);
+    body.innerHTML = '<div class="empty-state">Quiz generation isn\'t connected yet — this needs a backend endpoint (GET /api/v1/documents/:id/quiz).</div>';
+  }
+}
+
+// ===================== PROGRESS VIEW (ข้อ 11) =====================
+// ต้องมี backend endpoint: GET /api/v1/documents/:id/progress
+// -> { scorePercent, correct, total, weakClauses: [{ name, ratio }] }
+
+function renderProgressDocList(documents) {
+  const container = document.getElementById('progress-doc-list');
+  if (!documents || !documents.length) {
+    container.innerHTML = '<div class="empty-state">No documents yet. Upload one to start tracking progress.</div>';
+    return;
+  }
+  container.innerHTML = '';
+  documents.forEach(doc => {
+    const row = document.createElement('div');
+    row.className = 'progress-doc-row';
+    row.innerHTML = `
+      <div class="progress-doc-head">
+        <span>${doc.filename}</span>
+        <span class="progress-doc-score">—</span>
+      </div>
+      <div class="progress-doc-detail"><div class="empty-state">Click to load progress…</div></div>
+    `;
+    row.addEventListener('click', () => toggleProgressDetail(row, doc));
+    container.appendChild(row);
   });
-});
+}
+
+async function toggleProgressDetail(row, doc) {
+  const alreadyOpen = row.classList.contains('expanded');
+  document.querySelectorAll('.progress-doc-row.expanded').forEach(r => r.classList.remove('expanded'));
+  if (alreadyOpen) return;
+  row.classList.add('expanded');
+
+  const detail = row.querySelector('.progress-doc-detail');
+  const scoreEl = row.querySelector('.progress-doc-score');
+  if (row.dataset.loaded) return; // โหลดแล้วรอบก่อน ไม่ต้อง fetch ซ้ำ
+
+  detail.innerHTML = '<div class="empty-state">Loading…</div>';
+  try {
+    const res = await fetch(`/api/v1/documents/${doc.id}/progress`);
+    if (!res.ok) throw new Error('Not available');
+    const data = await res.json();
+    scoreEl.textContent = `${data.correct}/${data.total} correct`;
+
+    if (!data.weakClauses || !data.weakClauses.length) {
+      detail.innerHTML = '<div class="empty-state">No weak areas found yet — keep practicing.</div>';
+    } else {
+      detail.innerHTML = data.weakClauses.map(c => `
+        <div class="clause-row">
+          <div class="clause-top"><span>${c.name}</span><span style="color:var(--terracotta-deep);">${Math.round(c.ratio * 100)}%</span></div>
+          <div class="bar-track"><div class="bar-fill" style="width:${Math.round(c.ratio * 100)}%;background:var(--terracotta);"></div></div>
+        </div>
+      `).join('');
+    }
+    row.dataset.loaded = 'true';
+  } catch (err) {
+    console.error('Progress not available:', err);
+    detail.innerHTML = '<div class="empty-state">Progress tracking isn\'t connected yet — this needs a backend endpoint (GET /api/v1/documents/:id/progress).</div>';
+  }
+}
+
+// ===================== FILE UPLOAD (drag & drop + in-page progress) =====================
+
+const dropzone = document.getElementById('upload-dropzone');
+const uploadList = document.getElementById('upload-list');
+
+if (dropzone && uploadList) {
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.style.display = 'none';
+  fileInput.accept = '.pdf,.jpg,.jpeg,.png';
+  document.body.appendChild(fileInput);
+
+  dropzone.addEventListener('click', () => fileInput.click());
+
+  fileInput.addEventListener('change', (e) => {
+    if (e.target.files.length > 0) uploadFile(e.target.files[0]);
+    fileInput.value = '';
+  });
+
+  ['dragenter', 'dragover'].forEach(evt => {
+    dropzone.addEventListener(evt, (e) => {
+      e.preventDefault();
+      dropzone.classList.add('dragover');
+    });
+  });
+  ['dragleave', 'drop'].forEach(evt => {
+    dropzone.addEventListener(evt, (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('dragover');
+    });
+  });
+  dropzone.addEventListener('drop', (e) => {
+    const file = e.dataTransfer?.files?.[0];
+    if (file) uploadFile(file);
+  });
+
+  function createUploadItem(filename) {
+    const item = document.createElement('div');
+    item.className = 'upload-item';
+    item.innerHTML = `
+      <div style="flex:1;min-width:0;">
+        <div class="upload-filename">${filename}</div>
+        <div class="upload-step">Starting…</div>
+        <div class="progress-track"><div class="progress-fill" style="width:2%;"></div></div>
+      </div>
+      <span class="status-pill status-processing">uploading</span>
+    `;
+    uploadList.prepend(item);
+    return {
+      el: item,
+      setProgress(percent, step) {
+        item.querySelector('.progress-fill').style.width = `${percent}%`;
+        item.querySelector('.upload-step').textContent = step;
+      },
+      setStatus(status, label) {
+        const pill = item.querySelector('.status-pill');
+        pill.className = `status-pill status-${status}`;
+        pill.textContent = label;
+      }
+    };
+  }
+
+  async function pollUploadStatus(jobId, ui) {
+    try {
+      const res = await fetch(`/api/v1/upload-status/${jobId}`);
+      if (!res.ok) throw new Error('Job status not found.');
+      const job = await res.json();
+
+      ui.setProgress(job.percent ?? 0, job.step || '');
+
+      if (job.status === 'done') {
+        ui.setProgress(100, 'Indexed and ready');
+        ui.setStatus('done', 'indexed');
+        refreshDocumentList();
+        return;
+      }
+      if (job.status === 'error') {
+        ui.setStatus('error', 'failed');
+        ui.setProgress(job.percent ?? 0, job.error || 'Something went wrong.');
+        return;
+      }
+      if (job.status === 'pending_timeout') {
+        ui.setStatus('processing', 'still indexing');
+      }
+      setTimeout(() => pollUploadStatus(jobId, ui), 1200);
+    } catch (err) {
+      console.error('Upload status poll failed:', err);
+      ui.setStatus('error', 'failed');
+      ui.setProgress(0, 'Lost connection while checking upload status.');
+    }
+  }
+
+  async function uploadFile(file) {
+    const ui = createUploadItem(file.name);
+
+    const formData = new FormData();
+    formData.append('document', file);
+
+    try {
+      const response = await fetch('/api/v1/upload', { method: 'POST', body: formData });
+      const result = await response.json();
+
+      if (response.status === 202 && result.job_id) {
+        pollUploadStatus(result.job_id, ui);
+      } else {
+        ui.setStatus('error', 'failed');
+        ui.setProgress(0, result.error || 'Upload was rejected by the server.');
+      }
+    } catch (error) {
+      console.error('Upload error:', error);
+      ui.setStatus('error', 'failed');
+      ui.setProgress(0, 'Could not reach the server.');
+    }
+  }
+}
+
+// ===================== INIT =====================
+resetChatUI();
+loadCurrentUser();
+refreshDocumentList();
