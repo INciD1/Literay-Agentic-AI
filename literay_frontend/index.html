@@ -116,6 +116,13 @@
           <!-- รายการอัปโหลดจริง (แทนที่ alert() เดิม) — app.js เติม .upload-item เข้ามาที่นี่
                ทีละไฟล์ พร้อม progress bar + status pill ที่อัปเดตสดตาม polling -->
           <div id="upload-list"></div>
+
+          <!-- เอกสารที่เคยอัพโหลดไว้แล้ว (จาก GET /api/v1/documents) — แยกจาก upload-list
+               ด้านบนซึ่งใช้แสดง progress ของไฟล์ที่กำลังอัพโหลดในเซสชันนี้เท่านั้น -->
+          <div class="section-label" style="margin-top:28px;">Previously uploaded</div>
+          <div id="upload-existing-list">
+            <div class="empty-state" id="upload-existing-empty">No documents yet.</div>
+          </div>
         </div>
       </div>
 
@@ -133,19 +140,6 @@
 
     </div>
 
-    <!-- RIGHT PANEL -->
-    <div class="right-panel">
-      <div class="eyebrow" style="margin-bottom:10px;">Quiz</div>
-      <div id="quiz-panel">
-        <!-- app.js เติมเนื้อหาที่นี่ (ดู renderQuizPanel) -->
-        <div class="empty-state">Select a document to generate a quiz from it.</div>
-      </div>
-
-      <div class="stack-strip">
-        adk agent · gemini · vertex search · firestore
-      </div>
-    </div>
-
   </div>
 </div>
 
@@ -160,6 +154,22 @@
     </div>
     <div class="modal-body" id="history-list">
       <div class="empty-state">No saved conversations yet — click "New session" after chatting to save one here.</div>
+    </div>
+  </div>
+</div>
+
+<!-- CONFIRM MODAL — ใช้แทน window.confirm() ของเบราว์เซอร์ ให้ดูสอดคล้องกับดีไซน์แอป -->
+<div class="modal-overlay" id="confirm-modal">
+  <div class="modal-panel" style="max-width:380px;">
+    <div class="modal-header">
+      <span id="confirm-modal-title">Confirm</span>
+    </div>
+    <div class="modal-body" style="padding:18px 4px 22px;">
+      <p id="confirm-modal-message" style="font-size:14px;color:var(--navy);line-height:1.55;margin:0;"></p>
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;padding:0 2px 2px;">
+      <button class="btn btn-ghost" id="confirm-modal-cancel" type="button">Cancel</button>
+      <button class="btn btn-primary" id="confirm-modal-confirm" type="button">Delete</button>
     </div>
   </div>
 </div>

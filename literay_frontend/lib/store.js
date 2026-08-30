@@ -14,7 +14,7 @@ const path = require('path');
 const DB_PATH = path.join(__dirname, '..', 'data', 'db.json');
 
 function emptyDB() {
-  return { users: {}, documents: {}, sessions: {} };
+  return { users: {}, documents: {}, sessions: {}, quizResults: {} };
 }
 
 function readDB() {
@@ -96,6 +96,55 @@ function deleteSession(userId, sessionId) {
   }
 }
 
+// ---------- quiz results (ใช้คำนวณหน้า Progress จากพฤติกรรมจริงของผู้ใช้) ----------
+
+// บันทึกผลตอบคำถามควิซ 1 ข้อ
+// result: { documentId, questionId, question, clauseName, correct }
+function addQuizResult(userId, result) {
+  const db = readDB();
+  if (!db.quizResults[userId]) db.quizResults[userId] = [];
+  db.quizResults[userId].push({
+    documentId: result.documentId,
+    questionId: result.questionId || null,
+    question: result.question || null,
+    clauseName: result.clauseName || 'General',
+    correct: !!result.correct,
+    answeredAt: new Date().toISOString()
+  });
+  writeDB(db);
+}
+
+// ดึงผลตอบทั้งหมดของ user (กรองตาม documentId ได้ถ้าระบุ)
+function getQuizResults(userId, documentId) {
+  const db = readDB();
+  const all = db.quizResults[userId] || [];
+  return documentId ? all.filter(r => r.documentId === documentId) : all;
+}
+
+// สรุปผลสำหรับหน้า Progress: { correct, total, weakClauses: [{name, ratio}] }
+// weakClauses เรียงจาก clause ที่ตอบผิดบ่อยที่สุดไปน้อยที่สุด เอาแค่ top 5
+function getProgressSummary(userId, documentId) {
+  const results = getQuizResults(userId, documentId);
+  const total = results.length;
+  const correct = results.filter(r => r.correct).length;
+
+  const byClause = {};
+  results.forEach(r => {
+    const name = r.clauseName || 'General';
+    if (!byClause[name]) byClause[name] = { wrong: 0, total: 0 };
+    byClause[name].total += 1;
+    if (!r.correct) byClause[name].wrong += 1;
+  });
+
+  const weakClauses = Object.entries(byClause)
+    .map(([name, stat]) => ({ name, ratio: stat.total ? stat.wrong / stat.total : 0 }))
+    .filter(c => c.ratio > 0)
+    .sort((a, b) => b.ratio - a.ratio)
+    .slice(0, 5);
+
+  return { correct, total, weakClauses };
+}
+
 module.exports = {
   readDB,
   writeDB,
@@ -106,5 +155,8 @@ module.exports = {
   listSessions,
   getSession,
   saveSession,
-  deleteSession
+  deleteSession,
+  addQuizResult,
+  getQuizResults,
+  getProgressSummary
 };

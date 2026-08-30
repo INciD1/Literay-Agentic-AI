@@ -103,8 +103,6 @@ function setActiveDocument(doc) {
   document.querySelectorAll('#document-list .doc-item').forEach(el => {
     el.classList.toggle('active', el.dataset.docId === activeDocumentId);
   });
-
-  renderQuizPanel(doc);
 }
 
 // ล็อกไว้กับเอกสารเดิมตอนเปิดประวัติแชท (ข้อ 12) — ปลดล็อกเมื่อกด "+ New session"
@@ -127,18 +125,112 @@ function unlockDocumentSelection() {
   document.getElementById('document-list').classList.remove('locked');
 }
 
+// ===================== CUSTOM CONFIRM MODAL & TOAST =====================
+// แทนที่ window.confirm() / alert() ของเบราว์เซอร์ที่ดูไม่เข้ากับดีไซน์แอป
+
+function showConfirmModal({ title = 'Are you sure?', message = '', confirmLabel = 'Delete' } = {}) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('confirm-modal');
+    if (!modal) { resolve(window.confirm(message || title)); return; } // fallback กันพัง
+
+    modal.querySelector('#confirm-modal-title').textContent = title;
+    modal.querySelector('#confirm-modal-message').textContent = message;
+    const confirmBtn = modal.querySelector('#confirm-modal-confirm');
+    const cancelBtn = modal.querySelector('#confirm-modal-cancel');
+    confirmBtn.textContent = confirmLabel;
+
+    function cleanup(result) {
+      modal.classList.remove('open');
+      confirmBtn.removeEventListener('click', onConfirm);
+      cancelBtn.removeEventListener('click', onCancel);
+      modal.removeEventListener('click', onOverlay);
+      document.removeEventListener('keydown', onKeydown);
+      resolve(result);
+    }
+    function onConfirm() { cleanup(true); }
+    function onCancel() { cleanup(false); }
+    function onOverlay(e) { if (e.target === modal) cleanup(false); }
+    function onKeydown(e) {
+      if (e.key === 'Escape') cleanup(false);
+      if (e.key === 'Enter') cleanup(true);
+    }
+
+    confirmBtn.addEventListener('click', onConfirm);
+    cancelBtn.addEventListener('click', onCancel);
+    modal.addEventListener('click', onOverlay);
+    document.addEventListener('keydown', onKeydown);
+
+    modal.classList.add('open');
+  });
+}
+
+function showToast(message, type = 'error') {
+  let toast = document.getElementById('app-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'app-toast';
+    document.body.appendChild(toast);
+  }
+  toast.textContent = message;
+  toast.className = `app-toast ${type} show`;
+  clearTimeout(toast._hideTimer);
+  toast._hideTimer = setTimeout(() => toast.classList.remove('show'), 3200);
+}
+
+(function injectConfirmAndToastStyles() {
+  if (document.getElementById('confirm-toast-styles')) return;
+  const style = document.createElement('style');
+  style.id = 'confirm-toast-styles';
+  style.textContent = `
+    #confirm-modal-confirm {
+      background: #c0392b;
+      border-color: #c0392b;
+      color: #fff;
+    }
+    #confirm-modal-confirm:hover { background: #a93226; }
+    #app-toast {
+      position: fixed;
+      left: 50%;
+      bottom: 28px;
+      transform: translateX(-50%) translateY(12px);
+      background: var(--navy, #2b2b2b);
+      color: #fff;
+      padding: 11px 20px;
+      border-radius: 10px;
+      font-size: 13.5px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+      z-index: 9999;
+      max-width: 90vw;
+    }
+    #app-toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+    #app-toast.error { background: #c0392b; }
+  `;
+  document.head.appendChild(style);
+})();
+
 async function deleteDocument(doc, btnEl) {
-  const ok = window.confirm(`Delete "${doc.filename}"? This can't be undone.`);
+  const ok = await showConfirmModal({
+    title: 'Delete document?',
+    message: `Delete "${doc.filename}"? This can't be undone.`,
+    confirmLabel: 'Delete'
+  });
   if (!ok) return;
   btnEl.disabled = true;
   try {
     const res = await fetch(`/api/v1/documents/${doc.id}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error('Delete failed');
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.error || 'Delete failed');
     if (activeDocumentId === doc.id) setActiveDocument(null);
     refreshDocumentList();
   } catch (err) {
     console.error('Failed to delete document:', err);
-    alert("Couldn't delete this document. Please try again.");
+    showToast(err.message && err.message !== 'Delete failed' ? err.message : "Couldn't delete this document. Please try again.");
     btnEl.disabled = false;
   }
 }
@@ -181,6 +273,49 @@ function renderDocumentList(documents) {
   if (!activeDocumentId && !isHistoryLocked) {
     setActiveDocument(documents[0]);
   }
+
+  renderUploadedDocsList(documents);
+}
+
+// แสดงรายการเอกสารที่เคยอัพโหลดแล้วในหน้า "Upload document"
+// (แยกจาก #upload-list ซึ่งใช้แสดง progress ของไฟล์ที่กำลังอัพโหลดสด ๆ เท่านั้น)
+function renderUploadedDocsList(documents) {
+  const list = document.getElementById('upload-existing-list');
+  if (!list) return; // กัน error ถ้า index.html ยังไม่มี container นี้
+  const emptyState = document.getElementById('upload-existing-empty');
+  list.querySelectorAll('.doc-item').forEach(el => el.remove());
+
+  if (!documents || !documents.length) {
+    if (emptyState) emptyState.style.display = 'block';
+    return;
+  }
+  if (emptyState) emptyState.style.display = 'none';
+
+  documents.forEach(doc => {
+    const el = document.createElement('div');
+    el.className = 'doc-item';
+    el.dataset.docId = doc.id;
+    el.innerHTML = `
+      <div class="doc-item-top">
+        <div class="doc-name">${doc.filename}</div>
+        <button class="doc-delete-btn" type="button" title="Delete document" aria-label="Delete document">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0l-1 14a2 2 0 01-2 2H7a2 2 0 01-2-2L4 6h16z"/></svg>
+        </button>
+      </div>
+      <div class="doc-meta">Uploaded ${formatDate(doc.uploadedAt)}${doc.size ? ' · ' + formatBytes(doc.size) : ''}</div>
+      <span class="status-pill status-${doc.status === 'indexed' ? 'done' : 'processing'}">${doc.status}</span>
+    `;
+    // คลิกแล้วพาไปหน้า Chat พร้อมเลือกเอกสารนี้เป็น active document เลย
+    el.addEventListener('click', () => {
+      setActiveDocument(doc);
+      document.querySelector('.nav-item[data-view="chat"]').click();
+    });
+    el.querySelector('.doc-delete-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteDocument(doc, e.currentTarget);
+    });
+    list.appendChild(el);
+  });
 }
 
 async function refreshDocumentList() {
@@ -199,6 +334,13 @@ const chatInput = document.getElementById('chat-input');
 const sendButton = document.getElementById('send-btn');
 const chatScroll = document.getElementById('chat-scroll');
 
+// ตั้งค่า marked ครั้งเดียว: gfm เปิดตาราง/checklist, breaks ทำให้ขึ้นบรรทัดใหม่แบบ
+// soft line break (\n เดี่ยวๆ) ก็ตัดบรรทัดจริงในหน้าจอ ไม่ต้องรอเว้นบรรทัดคู่แบบ markdown เป๊ะๆ
+// ซึ่งเป็นสิ่งที่ผู้ใช้ทั่วไปคาดหวังในหน้าต่างแชท ไม่ใช่เอกสาร markdown ทางการ
+if (window.marked) {
+  marked.setOptions({ gfm: true, breaks: true });
+}
+
 function appendMessage(role, text, { record = true } = {}) {
   const row = document.createElement('div');
   row.className = `msg-row ${role}`;
@@ -210,7 +352,10 @@ function appendMessage(role, text, { record = true } = {}) {
     // ข้อความจาก agent เป็น markdown — แปลงเป็น HTML แล้ว sanitize ก่อนแสดงผล
     bubble.innerHTML = DOMPurify.sanitize(marked.parse(text));
   } else {
+    // ถ้า CDN ของ marked/DOMPurify โหลดไม่สำเร็จ (เช่นเน็ตองค์กรบล็อก) ยังต้องอ่านออก —
+    // เก็บการขึ้นบรรทัดใหม่ไว้แทนที่จะปล่อยให้ข้อความทั้งหมดอัดเป็นบรรทัดเดียว
     bubble.textContent = text;
+    bubble.classList.add('bubble-plain');
   }
 
   chatScroll.appendChild(row);
@@ -221,6 +366,57 @@ function appendMessage(role, text, { record = true } = {}) {
     scheduleAutoSave();
   }
 }
+
+// ===== typing indicator: จุดไข่ปลากระพริบระหว่างรอคำตอบจาก agent =====
+function showTypingIndicator() {
+  hideTypingIndicator(); // กันซ้อนกันถ้ามีอยู่แล้ว
+  const row = document.createElement('div');
+  row.className = 'msg-row agent';
+  row.id = 'typing-indicator-row';
+  row.innerHTML = `
+    <div class="msg-avatar">A</div>
+    <div class="bubble typing-bubble">
+      <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>
+    </div>
+  `;
+  chatScroll.appendChild(row);
+  chatScroll.scrollTop = chatScroll.scrollHeight;
+}
+
+function hideTypingIndicator() {
+  const el = document.getElementById('typing-indicator-row');
+  if (el) el.remove();
+}
+
+// inject CSS สำหรับ animation ครั้งเดียว (เผื่อ css/styles.css ยังไม่มี rule นี้)
+(function injectTypingIndicatorStyles() {
+  if (document.getElementById('typing-indicator-styles')) return;
+  const style = document.createElement('style');
+  style.id = 'typing-indicator-styles';
+  style.textContent = `
+    .typing-bubble {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 12px 16px;
+    }
+    .typing-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--navy, #6b6b6b);
+      opacity: 0.35;
+      animation: typingBlink 1.3s infinite ease-in-out;
+    }
+    .typing-dot:nth-child(2) { animation-delay: 0.18s; }
+    .typing-dot:nth-child(3) { animation-delay: 0.36s; }
+    @keyframes typingBlink {
+      0%, 80%, 100% { opacity: 0.35; transform: translateY(0); }
+      40% { opacity: 1; transform: translateY(-3px); }
+    }
+  `;
+  document.head.appendChild(style);
+})();
 
 function showErrorCard(message) {
   const err = document.createElement('div');
@@ -269,14 +465,21 @@ async function handleSend(retryMessage) {
     autoResizeInput();
   }
 
+  if (sendButton) sendButton.disabled = true;
+  showTypingIndicator();
+
   try {
     const reply = await sendChatMessage(message);
     lastFailedMessage = null;
+    hideTypingIndicator();
     appendMessage('agent', reply);
   } catch (error) {
     console.error('Chat request failed:', error);
     lastFailedMessage = message;
+    hideTypingIndicator();
     showErrorCard('The server is responding slower than usual, or is temporarily unreachable. Nothing about your document has been lost.');
+  } finally {
+    if (sendButton) sendButton.disabled = false;
   }
 }
 
@@ -404,12 +607,16 @@ async function renameSession(session, titleEl) {
     if (session.id === currentSessionId) currentSessionTitle = session.title;
   } catch (err) {
     console.error('Failed to rename session:', err);
-    alert("Couldn't rename this conversation. Please try again.");
+    showToast("Couldn't rename this conversation. Please try again.");
   }
 }
 
 async function deleteSession(session, rowEl) {
-  const ok = window.confirm('Delete this conversation? This can\'t be undone.');
+  const ok = await showConfirmModal({
+    title: 'Delete conversation?',
+    message: "Delete this conversation? This can't be undone.",
+    confirmLabel: 'Delete'
+  });
   if (!ok) return;
   try {
     const res = await fetch(`/api/v1/sessions/${session.id}`, { method: 'DELETE' });
@@ -420,7 +627,7 @@ async function deleteSession(session, rowEl) {
     }
   } catch (err) {
     console.error('Failed to delete session:', err);
-    alert("Couldn't delete this conversation. Please try again.");
+    showToast("Couldn't delete this conversation. Please try again.");
   }
 }
 
@@ -497,64 +704,6 @@ async function loadSessionIntoChat(sessionId) {
   }
 }
 
-// ===================== QUIZ PANEL (ข้อ 5) =====================
-// ต้องมี backend endpoint: GET /api/v1/documents/:id/quiz -> { questions: [{ question, options: [...], correctIndex }] }
-// ถ้ายังไม่มี endpoint นี้ ปุ่ม "Generate quiz" จะโชว์ข้อความแจ้งว่ายังใช้งานไม่ได้ แทนที่จะพัง
-
-function renderQuizPanel(doc) {
-  const panel = document.getElementById('quiz-panel');
-  if (!doc) {
-    panel.innerHTML = '<div class="empty-state">Select a document to generate a quiz from it.</div>';
-    return;
-  }
-  panel.innerHTML = `
-    <button class="btn btn-primary quiz-generate-btn" type="button">Generate quiz from "${doc.filename}"</button>
-    <div id="quiz-panel-body"></div>
-  `;
-  panel.querySelector('.quiz-generate-btn').addEventListener('click', () => loadQuiz(doc));
-}
-
-async function loadQuiz(doc) {
-  const body = document.getElementById('quiz-panel-body');
-  body.innerHTML = '<div class="empty-state">Generating questions…</div>';
-  try {
-    const res = await fetch(`/api/v1/documents/${doc.id}/quiz`);
-    if (!res.ok) throw new Error('Not available');
-    const { questions } = await res.json();
-    if (!questions || !questions.length) {
-      body.innerHTML = '<div class="empty-state">No quiz questions available for this document yet.</div>';
-      return;
-    }
-    body.innerHTML = '';
-    questions.forEach((q, qi) => {
-      const qEl = document.createElement('div');
-      qEl.className = 'quiz-q-panel';
-      qEl.innerHTML = `<b>Q${qi + 1}.</b> ${q.question}`;
-      const optsWrap = document.createElement('div');
-      q.options.forEach((opt, oi) => {
-        const optBtn = document.createElement('button');
-        optBtn.className = 'quiz-opt-panel';
-        optBtn.type = 'button';
-        optBtn.textContent = opt;
-        optBtn.addEventListener('click', () => {
-          if (optsWrap.dataset.answered) return;
-          optsWrap.dataset.answered = 'true';
-          optsWrap.querySelectorAll('.quiz-opt-panel').forEach((el, i) => {
-            if (i === q.correctIndex) el.classList.add('correct');
-          });
-          if (oi !== q.correctIndex) optBtn.classList.add('wrong');
-        });
-        optsWrap.appendChild(optBtn);
-      });
-      body.appendChild(qEl);
-      body.appendChild(optsWrap);
-    });
-  } catch (err) {
-    console.error('Quiz not available:', err);
-    body.innerHTML = '<div class="empty-state">Quiz generation isn\'t connected yet — this needs a backend endpoint (GET /api/v1/documents/:id/quiz).</div>';
-  }
-}
-
 // ===================== PROGRESS VIEW (ข้อ 11) =====================
 // ต้องมี backend endpoint: GET /api/v1/documents/:id/progress
 // -> { scorePercent, correct, total, weakClauses: [{ name, ratio }] }
@@ -581,6 +730,45 @@ function renderProgressDocList(documents) {
   });
 }
 
+// ----- ดึงสรุปคะแนน (ไม่ throw — คืน null เมื่อพลาด ให้ผู้เรียกตัดสินใจเอง) -----
+async function fetchProgressSummary(documentId) {
+  try {
+    const res = await fetch(`/api/v1/documents/${documentId}/progress`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Request failed with status ${res.status}`);
+    return data;
+  } catch (err) {
+    console.error('Progress not available:', err);
+    return null;
+  }
+}
+
+// ----- วาดสรุปคะแนน + weak clauses ลงใน container (เรียกซ้ำได้ทุกครั้งที่มีข้อมูลใหม่) -----
+function renderProgressSummary(el, data) {
+  if (!data || !data.total) {
+    el.innerHTML = '<div class="empty-state">No quiz results yet — generate a quiz below to start tracking your understanding of this document.</div>';
+    return;
+  }
+  const percent = Math.round((data.correct / data.total) * 100);
+  let html = `
+    <div class="progress-score-line">
+      <span class="progress-score-percent">${percent}%</span>
+      <span class="progress-score-detail">${data.correct}/${data.total} correct across all attempts</span>
+    </div>
+  `;
+  if (data.weakClauses && data.weakClauses.length) {
+    html += data.weakClauses.map(c => `
+      <div class="clause-row">
+        <div class="clause-top"><span>${c.name}</span><span style="color:var(--terracotta-deep);">${Math.round(c.ratio * 100)}% missed</span></div>
+        <div class="bar-track"><div class="bar-fill" style="width:${Math.round(c.ratio * 100)}%;background:var(--terracotta);"></div></div>
+      </div>
+    `).join('');
+  } else {
+    html += '<div class="empty-state" style="margin-top:8px;">No weak areas found yet — keep practicing.</div>';
+  }
+  el.innerHTML = html;
+}
+
 async function toggleProgressDetail(row, doc) {
   const alreadyOpen = row.classList.contains('expanded');
   document.querySelectorAll('.progress-doc-row.expanded').forEach(r => r.classList.remove('expanded'));
@@ -591,28 +779,177 @@ async function toggleProgressDetail(row, doc) {
   const scoreEl = row.querySelector('.progress-doc-score');
   if (row.dataset.loaded) return; // โหลดแล้วรอบก่อน ไม่ต้อง fetch ซ้ำ
 
-  detail.innerHTML = '<div class="empty-state">Loading…</div>';
-  try {
-    const res = await fetch(`/api/v1/documents/${doc.id}/progress`);
-    if (!res.ok) throw new Error('Not available');
-    const data = await res.json();
-    scoreEl.textContent = `${data.correct}/${data.total} correct`;
+  detail.innerHTML = `
+    <div class="progress-summary-block"><div class="empty-state">Loading your progress…</div></div>
+    <div class="progress-review-block">
+      <button class="btn btn-ghost btn-block review-btn" type="button">Ask the assistant to review your understanding</button>
+      <div class="review-area"></div>
+    </div>
+    <div class="progress-quiz-block">
+      <button class="btn btn-primary quiz-generate-btn" type="button">Generate a quiz for this document</button>
+      <div class="quiz-area"></div>
+    </div>
+  `;
+  const summaryEl = detail.querySelector('.progress-summary-block');
+  const quizAreaEl = detail.querySelector('.quiz-area');
+  const generateBtn = detail.querySelector('.quiz-generate-btn');
+  const reviewAreaEl = detail.querySelector('.review-area');
+  const reviewBtn = detail.querySelector('.review-btn');
 
-    if (!data.weakClauses || !data.weakClauses.length) {
-      detail.innerHTML = '<div class="empty-state">No weak areas found yet — keep practicing.</div>';
+  const data = await fetchProgressSummary(doc.id);
+  scoreEl.textContent = data && data.total ? `${data.correct}/${data.total} correct` : 'No quiz yet';
+  renderProgressSummary(summaryEl, data);
+
+  generateBtn.addEventListener('click', () => startQuiz(doc, quizAreaEl, summaryEl, scoreEl, generateBtn));
+  reviewBtn.addEventListener('click', () => askForReview(doc, reviewAreaEl, reviewBtn));
+
+  row.dataset.loaded = 'true';
+}
+
+// ----- ทางเลือกที่ 3 ที่คุยกันไว้: ไม่แตะระบบคะแนนจากควิซเลย เพิ่มปุ่มแยกต่างหาก
+// ให้ agent อ่านประวัติแชทที่ล็อกกับเอกสารนี้ + สรุปผลควิซ แล้วเขียนความเห็นเชิงคุณภาพ
+// กลับมา — เรียกเฉพาะตอนกดเอง ไม่เรียกอัตโนมัติทุกครั้งที่เปิดหน้า Progress -----
+async function askForReview(doc, areaEl, btn) {
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Reading your conversation…';
+  areaEl.innerHTML = '<div class="empty-state">The assistant is reviewing your chat history about this document — this can take a moment.</div>';
+
+  try {
+    const res = await fetch(`/api/v1/documents/${doc.id}/review`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Could not generate a review right now.');
+
+    const box = document.createElement('div');
+    box.className = 'review-result';
+    const label = document.createElement('div');
+    label.className = 'review-label';
+    label.textContent = "Assistant's assessment";
+    box.appendChild(label);
+
+    const body = document.createElement('div');
+    if (window.marked && window.DOMPurify) {
+      body.innerHTML = DOMPurify.sanitize(marked.parse(data.review));
     } else {
-      detail.innerHTML = data.weakClauses.map(c => `
-        <div class="clause-row">
-          <div class="clause-top"><span>${c.name}</span><span style="color:var(--terracotta-deep);">${Math.round(c.ratio * 100)}%</span></div>
-          <div class="bar-track"><div class="bar-fill" style="width:${Math.round(c.ratio * 100)}%;background:var(--terracotta);"></div></div>
-        </div>
-      `).join('');
+      body.textContent = data.review;
     }
-    row.dataset.loaded = 'true';
+    box.appendChild(body);
+
+    areaEl.innerHTML = '';
+    areaEl.appendChild(box);
+    btn.textContent = 'Ask again';
   } catch (err) {
-    console.error('Progress not available:', err);
-    detail.innerHTML = '<div class="empty-state">Progress tracking isn\'t connected yet — this needs a backend endpoint (GET /api/v1/documents/:id/progress).</div>';
+    console.error('Review request failed:', err);
+    areaEl.innerHTML = '';
+    showToast(err.message || "Couldn't generate a review. Please try again.");
+    btn.textContent = originalLabel;
+  } finally {
+    btn.disabled = false;
   }
+}
+
+// ----- ขอชุดคำถามจาก agent (server จะเก็บเฉลยไว้ฝั่งตัวเองเท่านั้น ไม่ส่งมาที่ browser) -----
+async function startQuiz(doc, quizAreaEl, summaryEl, scoreEl, btn) {
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Generating quiz…';
+  quizAreaEl.innerHTML = '<div class="empty-state">The assistant is writing questions from this document — this can take a moment.</div>';
+
+  try {
+    const res = await fetch(`/api/v1/documents/${doc.id}/quiz`);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Could not generate a quiz right now.');
+    renderQuizCard(quizAreaEl, data.quizId, data.questions, doc, summaryEl, scoreEl);
+    btn.textContent = 'Regenerate quiz';
+  } catch (err) {
+    console.error('Quiz generation failed:', err);
+    quizAreaEl.innerHTML = '';
+    showToast(err.message || "Couldn't generate a quiz. Please try again.");
+    btn.textContent = originalLabel;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ----- วาดคำถามทั้งชุดเป็น quiz-card เดียว ให้ตอบได้ทีละข้อ พร้อมเฉลยทันทีต่อข้อ -----
+function renderQuizCard(container, quizId, questions, doc, summaryEl, scoreEl) {
+  const card = document.createElement('div');
+  card.className = 'quiz-card quiz-standalone';
+  card.innerHTML = `
+    <div class="quiz-head">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+      Quick check — ${questions.length} question${questions.length === 1 ? '' : 's'}
+    </div>
+    <div class="quiz-body"></div>
+  `;
+  const body = card.querySelector('.quiz-body');
+  let answeredCount = 0;
+  let correctCount = 0;
+
+  questions.forEach((q, questionIndex) => {
+    const block = document.createElement('div');
+    block.className = 'quiz-question-block';
+    block.innerHTML = `
+      <div class="quiz-q">${questionIndex + 1}. ${q.question}</div>
+      <div class="quiz-options"></div>
+      <div class="quiz-feedback"></div>
+    `;
+    const optionsEl = block.querySelector('.quiz-options');
+    const feedbackEl = block.querySelector('.quiz-feedback');
+
+    q.options.forEach((optionText, optionIndex) => {
+      const optBtn = document.createElement('button');
+      optBtn.type = 'button';
+      optBtn.className = 'quiz-opt';
+      optBtn.textContent = optionText;
+      optBtn.addEventListener('click', async () => {
+        const allOpts = Array.from(optionsEl.querySelectorAll('.quiz-opt'));
+        allOpts.forEach(b => { b.disabled = true; });
+
+        try {
+          const res = await fetch(`/api/v1/documents/${doc.id}/quiz-answer`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ quizId, questionIndex, selectedIndex: optionIndex })
+          });
+          const result = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(result.error || 'Could not check this answer.');
+
+          optBtn.classList.add(result.correct ? 'correct' : 'wrong');
+          if (!result.correct && allOpts[result.correctIndex]) {
+            allOpts[result.correctIndex].classList.add('correct');
+          }
+          feedbackEl.textContent = result.correct
+            ? 'Correct!'
+            : 'Not quite — the right answer is highlighted above.';
+          feedbackEl.style.display = 'block';
+
+          answeredCount += 1;
+          if (result.correct) correctCount += 1;
+
+          if (answeredCount === questions.length) {
+            const note = document.createElement('div');
+            note.className = 'quiz-complete-note';
+            note.textContent = `Quiz complete — you got ${correctCount}/${questions.length} right this round. Updating your progress…`;
+            container.appendChild(note);
+            const updated = await fetchProgressSummary(doc.id);
+            renderProgressSummary(summaryEl, updated);
+            if (updated && updated.total) scoreEl.textContent = `${updated.correct}/${updated.total} correct`;
+          }
+        } catch (err) {
+          console.error('Failed to submit quiz answer:', err);
+          showToast(err.message || "Couldn't check this answer. Please try again.");
+          allOpts.forEach(b => { b.disabled = false; });
+        }
+      });
+      optionsEl.appendChild(optBtn);
+    });
+
+    body.appendChild(block);
+  });
+
+  container.innerHTML = '';
+  container.appendChild(card);
 }
 
 // ===================== FILE UPLOAD (drag & drop + in-page progress) =====================

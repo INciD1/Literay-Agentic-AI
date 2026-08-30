@@ -94,6 +94,14 @@ app.get('/', requireAuth, (req, res) => {
 
 // ===================== UTILS =====================
 
+// Shared by every route that spawns a script from literay_backend/literay_agent/
+// (ingest, delete, ...) so the venv-fallback logic only lives in one place.
+const LITERAY_AGENT_DIR = path.join(__dirname, '../literay_backend/literay_agent');
+function resolvePythonCmd() {
+  const pythonExecutable = path.join(__dirname, '../.venv/Scripts/python.exe');
+  return fs.existsSync(pythonExecutable) ? pythonExecutable : 'python';
+}
+
 function extractMessage(payload) {
   if (typeof payload === 'string') return payload;
 
@@ -252,12 +260,69 @@ app.delete('/api/v1/sessions/:id', requireAuth, (req, res) => {
 });
 
 // ✅ 2. เพิ่ม API ให้ลบเอกสารได้
+// เดิม endpoint นี้ลบแค่ใน local store (data/db.json) — เอกสารหายจาก sidebar แต่ยังอยู่จริง
+// ใน GCS/Firestore/Vertex AI Search และยังตอบคำถามผ่าน chat ได้ถ้ามีคนรู้ document_id เดิม
+// ตอนนี้ spawn delete_document.py ไปลบที่ต้นทางก่อน (แบบเดียวกับที่ /upload spawn
+// ingest_document.py) แล้วค่อยเคลียร์ local store ตาม exit code — ไม่ต้องมี service
+// ฝั่ง Python รันตลอดเวลาเพิ่มขึ้นมาอีกตัว
 app.delete('/api/v1/documents/:id', requireAuth, (req, res) => {
-  if(store.deleteDocument) {
-    store.deleteDocument(req.session.user.id, req.params.id);
-  }
-  res.json({ ok: true });
+  const documentId = req.params.id;
+  const userId = req.session.user.id;
+
+  const pythonScriptPath = path.join(LITERAY_AGENT_DIR, 'delete_document.py');
+  const pyCmd = resolvePythonCmd();
+
+  const child = spawn(pyCmd, [pythonScriptPath, documentId, '--user-id', userId]);
+
+  let stdoutTail = '';
+  let stderrTail = '';
+  child.stdout.on('data', (chunk) => { stdoutTail += chunk.toString(); });
+  child.stderr.on('data', (chunk) => { stderrTail += chunk.toString(); });
+
+  child.on('close', (code) => {
+    // exit codes per delete_document.py's docstring:
+    //   0 = deleted (or was already gone at the source) -> safe to clear locally
+    //   2 = exists but belongs to a different user_id    -> do NOT clear locally
+    //   3 = owned by this user but a step failed partway -> do NOT clear locally,
+    //       Firestore record was deliberately left in place for a retry
+    if (code === 0) {
+      if (store.deleteDocument) store.deleteDocument(userId, documentId);
+      return res.json({ ok: true });
+    }
+    if (code === 2) {
+      console.warn(`[Delete] ownership check failed for ${documentId} / user ${userId}`);
+      return res.status(403).json({ error: 'This document does not belong to you.' });
+    }
+    console.error(`[Delete] delete_document.py failed (exit ${code}) for ${documentId}:\n${stderrTail || stdoutTail}`);
+    return res.status(502).json({ error: 'Could not delete the document from storage/search. Please try again.' });
+  });
+
+  child.on('error', (err) => {
+    console.error('[Delete] could not start delete process:', err);
+    res.status(502).json({ error: 'Could not start the delete process.' });
+  });
 });
+
+// ดึง JSON ออกจากข้อความที่ Gemini ตอบกลับมา — ทนทานกว่าการ strip ```json``` เฉย ๆ
+// เพราะบางครั้งโมเดลแถมคำอธิบายก่อน/หลังก้อน JSON มาด้วย แม้จะสั่งว่า "raw JSON only" แล้วก็ตาม
+function extractJsonPayload(text) {
+  if (typeof text !== 'string') return null;
+  const cleaned = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch (err) {
+    // ลอง fallback: ดึงเฉพาะก้อน { ... } แรกสุดที่เจอในข้อความ
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        return JSON.parse(match[0]);
+      } catch (err2) {
+        return null;
+      }
+    }
+    return null;
+  }
+}
 
 // ===================== DOCUMENTS & QUIZ & PROGRESS =====================
 
@@ -265,36 +330,104 @@ app.get('/api/v1/documents', requireAuth, (req, res) => {
   res.json({ documents: store.listDocuments(req.session.user.id) });
 });
 
-// ✅ 3. ดึง Progress จริงจาก Backend ผ่าน RAG
-app.get('/api/v1/documents/:id/progress', requireAuth, async (req, res) => {
+// ✅ 3. Progress คำนวณจากผลควิซจริงที่ผู้ใช้เคยตอบ (เก็บไว้ผ่าน POST /quiz-answer ด้านล่าง)
+// ไม่ต้องพึ่ง agent เดาอีกต่อไป — เร็วกว่าเดิมมากและตัวเลขตรงกับพฤติกรรมจริงของผู้ใช้
+app.get('/api/v1/documents/:id/progress', requireAuth, (req, res) => {
   const documentId = req.params.id;
   const userId = req.session.user.id;
-  const sessionId = crypto.randomUUID();
+  const summary = store.getProgressSummary(userId, documentId);
+  res.json(summary);
+});
+
+// ✅ "Ask the assistant to review your understanding" — ทางเลือกที่ 3 ที่คุยกันไว้:
+// เก็บระบบคะแนนจากควิซไว้เหมือนเดิมทุกอย่าง (endpoint ด้านบนไม่ถูกแตะเลย) แล้วเพิ่ม
+// endpoint แยกต่างหากนี้ ให้ agent อ่านประวัติแชทที่ล็อกกับเอกสารนี้ + สรุปผลควิซ
+// แล้วเขียนความเห็นเชิงคุณภาพกลับมา — เรียกเฉพาะตอนผู้ใช้กดปุ่มเอง ไม่เรียกอัตโนมัติ
+// ตอนเปิดหน้า Progress เพื่อไม่ให้เสีย LLM call ทุกครั้งที่แค่ดูคะแนน
+app.post('/api/v1/documents/:id/review', requireAuth, async (req, res) => {
+  if (!backendUrl) {
+    return res.status(500).json({ error: 'BACKEND_URL is not configured.' });
+  }
+  const documentId = req.params.id;
+  const userId = req.session.user.id;
   const trimmedBackendUrl = backendUrl.replace(/\/$/, '');
 
-  const prompt = `[Context: document_id="${documentId}"]\nLook up this user's quiz results and document metadata using your tools.\nRespond ONLY with a raw JSON object in this exact format (no markdown or backticks):\n{"correct": 0, "total": 0, "weakClauses": [{"name": "Clause Name", "ratio": 0.5}]}`;
+  const sessions = store.listSessions(userId).filter(s => s.document_id === documentId);
+  if (!sessions.length) {
+    return res.status(404).json({
+      error: 'No conversation history found for this document yet — chat with the assistant about it first, then come back and ask for a review.'
+    });
+  }
 
+  // รวมข้อความจากทุกแชทที่เคยล็อกกับเอกสารนี้ เรียงตามลำดับเวลาที่บันทึกไว้ —
+  // จำกัดความยาวรวมไว้กันบานปลายถ้ามีคนคุยกับเอกสารเดียวกันมาหลายสัปดาห์
+  const MAX_TRANSCRIPT_CHARS = 12000;
+  let transcript = '';
+  outer:
+  for (const session of sessions) {
+    for (const m of session.messages) {
+      const line = `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text}\n`;
+      if (transcript.length + line.length > MAX_TRANSCRIPT_CHARS) break outer;
+      transcript += line;
+    }
+  }
+
+  const quizResults = store.getQuizResults(userId, documentId);
+  const quizSummaryLine = quizResults.length
+    ? `The user has answered ${quizResults.length} quiz question(s) about this document, getting ${quizResults.filter(r => r.correct).length} correct.`
+    : 'The user has not taken any quizzes on this document yet.';
+
+  const prompt = `[Context: The following is a conversation history between a user and an AI assistant discussing the document with document_id="${documentId}". Do not answer as if the user is asking you a new question — act as an evaluator instead.]
+
+Conversation history:
+${transcript}
+
+${quizSummaryLine}
+
+Based on the conversation above, write a short (3-5 sentence) qualitative assessment of how well this user understands this document. Mention specific clauses or topics they seem to understand well, and specific ones where they seemed confused or asked clarifying questions repeatedly. Do not repeat the raw conversation back — synthesize it. Respond in plain prose, no markdown headers.`;
+
+  const reviewSessionId = crypto.randomUUID();
   try {
-    await ensureSession(trimmedBackendUrl, userId, sessionId);
+    await ensureSession(trimmedBackendUrl, userId, reviewSessionId);
     const response = await fetch(`${trimmedBackendUrl}/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
-        app_name: appName, user_id: userId, session_id: sessionId, document_id: documentId,
-        message: prompt, new_message: { role: 'user', parts: [{ text: prompt }] }
+        app_name: appName,
+        user_id: userId,
+        session_id: reviewSessionId,
+        document_id: documentId,
+        message: prompt,
+        new_message: { role: 'user', parts: [{ text: prompt }] }
       })
     });
-    
-    const payload = JSON.parse(await response.text());
+
+    const rawText = await response.text();
+    let payload;
+    try {
+      payload = JSON.parse(rawText);
+    } catch (parseErr) {
+      return res.status(502).json({ error: 'Backend returned a non-JSON response.', error_preview: rawText.slice(0, 500) });
+    }
+    if (!response.ok) {
+      return res.status(response.status).json({ error: 'Backend request failed.', details: payload });
+    }
+
     const text = extractMessage(payload);
-    const cleanJson = text.replace(/```json/g, '').replace(/```/g, '').trim();
-    
-    res.json(JSON.parse(cleanJson));
+    if (typeof text !== 'string' || !text.trim()) {
+      return res.status(502).json({ error: 'The assistant did not return a review.', details: payload });
+    }
+    return res.json({ review: text.trim() });
   } catch (err) {
-    console.error('Progress Error:', err);
-    res.status(500).json({ error: 'Failed to fetch real progress from agent' });
+    console.error('Review generation failed:', err);
+    return res.status(502).json({ error: 'Could not reach the assistant to generate a review.' });
   }
 });
+
+// (เดิมมี POST /quiz-result ที่รับ boolean `correct` มาจาก client ตรง ๆ แล้วเชื่อทันที —
+// ถอดออกเพราะไม่มีการตรวจสอบใด ๆ เลยว่าคำตอบถูกจริงไหม ใครก็ยิง correct:true เข้ามาได้
+// ตลอด ตอนนี้ /quiz-answer ด้านล่างเป็นคนตัดสินถูก/ผิดจากเฉลยที่ server เก็บไว้เอง
+// และเรียก store.addQuizResult ให้เสร็จในตัวแทน)
 
 // ✅ 4. สร้าง Quiz เนื้อหาจริงจาก Backend
 app.get('/api/v1/documents/:id/quiz', requireAuth, async (req, res) => {
@@ -303,7 +436,7 @@ app.get('/api/v1/documents/:id/quiz', requireAuth, async (req, res) => {
   const sessionId = crypto.randomUUID();
   const trimmedBackendUrl = backendUrl.replace(/\/$/, '');
 
-  const prompt = `[Context: Answer strictly using the document_id="${documentId}"]\nGenerate a 3-question multiple choice quiz based on the key points of this document.\nRespond ONLY with a raw JSON object in this exact format (no markdown or backticks):\n{"questions": [{"question": "...", "options": ["A","B","C","D"], "correctIndex": 0}]}`;
+  const prompt = `[Context: Answer strictly using the document_id="${documentId}"]\nGenerate a 3-question multiple choice quiz based on the key points of this document.\nEach question should test understanding of one specific clause or section — give that clause a short human-readable name (e.g. "Arbitration", "Termination", "Payment terms").\nRespond ONLY with a raw JSON object in this exact format (no markdown or backticks):\n{"questions": [{"question": "...", "options": ["A","B","C","D"], "correctIndex": 0, "clauseName": "Short clause name"}]}`;
 
   try {
     await ensureSession(trimmedBackendUrl, userId, sessionId);
@@ -318,14 +451,83 @@ app.get('/api/v1/documents/:id/quiz', requireAuth, async (req, res) => {
     
     const payload = JSON.parse(await response.text());
     const text = extractMessage(payload);
-    const cleanJson = text.replace(/```json/g, '').replace(/```/g, '').trim();
-    
-    res.json(JSON.parse(cleanJson));
+    const parsed = extractJsonPayload(text);
+
+    if (!parsed || !Array.isArray(parsed.questions) || !parsed.questions.length) {
+      console.error(`[Quiz] Could not parse agent response as JSON for document ${documentId}. Raw text was:\n${text}`);
+      return res.status(502).json({
+        error: 'The assistant did not return valid quiz data. Please try again.',
+        raw_preview: typeof text === 'string' ? text.slice(0, 300) : null
+      });
+    }
+
+    // เก็บชุดคำถาม+เฉลยไว้ที่ server เท่านั้น ผูกกับ quizId แบบสุ่มใหม่ทุกครั้ง
+    const quizId = crypto.randomUUID();
+    quizSessions.set(quizId, {
+      userId,
+      documentId,
+      questions: parsed.questions,
+      createdAt: Date.now()
+    });
+    setTimeout(() => quizSessions.delete(quizId), QUIZ_SESSION_TTL_MS);
+
+    res.json({ quizId, questions: sanitizeQuizForClient(parsed.questions) });
   } catch (err) {
     console.error('Quiz Error:', err);
-    res.status(500).json({ error: 'Failed to generate real quiz from agent' });
+    res.status(500).json({ error: 'Failed to generate real quiz from agent', details: err.message });
   }
 });
+
+// ✅ ตรวจคำตอบควิซที่ server ฝั่งเดียว — client ส่งมาแค่ index ที่เลือก ไม่มีทางรู้ล่วงหน้า
+// ว่าข้อไหนถูก เพราะเฉลยไม่เคยถูกส่งออกไปเลยตั้งแต่ /quiz ด้านบน
+app.post('/api/v1/documents/:id/quiz-answer', requireAuth, (req, res) => {
+  const documentId = req.params.id;
+  const userId = req.session.user.id;
+  const { quizId, questionIndex, selectedIndex } = req.body;
+
+  if (typeof quizId !== 'string' || !Number.isInteger(questionIndex) || !Number.isInteger(selectedIndex)) {
+    return res.status(400).json({ error: 'quizId, questionIndex, and selectedIndex are required.' });
+  }
+
+  const session = quizSessions.get(quizId);
+  if (!session || session.userId !== userId || session.documentId !== documentId) {
+    return res.status(404).json({ error: 'Quiz session not found or expired. Please generate a new quiz.' });
+  }
+
+  const question = session.questions[questionIndex];
+  if (!question) {
+    return res.status(400).json({ error: 'Invalid questionIndex for this quiz.' });
+  }
+
+  const correct = selectedIndex === question.correctIndex;
+
+  store.addQuizResult(userId, {
+    documentId,
+    questionId: `${quizId}-${questionIndex}`,
+    question: question.question,
+    clauseName: question.clauseName || 'General',
+    correct
+  });
+
+  res.json({ correct, correctIndex: question.correctIndex });
+});
+
+// ===================== QUIZ SESSIONS (server-side answer key) =====================
+// เก็บชุดคำถาม+เฉลยไว้ที่ server เท่านั้น ไม่ส่ง correctIndex ออกไปที่ browser เด็ดขาด —
+// ก่อนหน้านี้ /documents/:id/quiz ส่ง correctIndex ไปพร้อมคำถามตั้งแต่แรก ทำให้เปิด
+// Network tab ดูเฉลยได้ก่อนตอบ. ตอนนี้เปลี่ยนเป็น: เก็บชุดคำถามไว้ในนี้ ผูกกับ quizId,
+// แล้วให้ /quiz-answer เป็นคนตัดสินถูก/ผิดแทน client
+const quizSessions = new Map();
+const QUIZ_SESSION_TTL_MS = 60 * 60 * 1000; // 1 ชั่วโมงก็เกินพอสำหรับทำควิซหนึ่งรอบ
+
+function sanitizeQuizForClient(questions) {
+  // ตัด correctIndex ออกก่อนส่งให้ browser — เหลือแค่สิ่งที่ต้องใช้แสดงผล
+  return questions.map(q => ({
+    question: q.question,
+    options: q.options,
+    clauseName: q.clauseName || 'General'
+  }));
+}
 
 // ===================== UPLOAD =====================
 
@@ -357,9 +559,8 @@ app.post('/api/v1/upload', requireAuth, upload.single('document'), (req, res) =>
   const filePath = req.file.path;
   const jobId = crypto.randomUUID();
 
-  const pythonScriptPath = path.join(__dirname, '../literay_backend/literay_agent/ingest_document.py');
-  const pythonExecutable = path.join(__dirname, '../.venv/Scripts/python.exe'); 
-  const pyCmd = fs.existsSync(pythonExecutable) ? pythonExecutable : 'python';
+  const pythonScriptPath = path.join(LITERAY_AGENT_DIR, 'ingest_document.py');
+  const pyCmd = resolvePythonCmd();
 
   updateJob(jobId, {
     status: 'running',
