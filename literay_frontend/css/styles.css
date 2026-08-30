@@ -590,3 +590,16 @@ a{color:var(--blue);}
   .user-chip span:not(.uid){display:none;}
   .auth-card{padding:32px 22px;}
 }
+
+/* ===== MEMORY-RECALL INDICATOR (Day 6 polish: "agent remembers you") =====
+   Only rendered when get_document_metadata actually found a prior weak
+   spot for this topic — see extractMemorySignal in server.js. Reuses the
+   same amber/brass tone as .review-result so it reads as "the same kind
+   of insight" rather than a clashing new color. */
+.memory-badge{
+  margin-top:10px;display:flex;align-items:flex-start;gap:7px;
+  background:#FBF3E2;border:1px solid var(--brass);padding:9px 12px;
+  border-radius:var(--radius-sm);font-size:12px;color:var(--brass-deep);
+}
+.memory-badge svg{width:14px;height:14px;flex-shrink:0;margin-top:1px;color:var(--brass-deep);}
+.memory-badge b{font-weight:600;}

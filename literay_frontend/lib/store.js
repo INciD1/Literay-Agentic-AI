@@ -1,109 +1,137 @@
 // ===== lib/store.js =====
-// เก็บข้อมูลแบบไฟล์ JSON เดียว (data/db.json) — พอสำหรับ demo/hackathon
-// ไม่ต้องตั้ง DB เพิ่ม แต่ข้อมูลอยู่ถาวรข้าม restart ต่างจาก in-memory Map เดิม
-// โครงสร้าง:
-// {
-//   users:     { [googleSub]: { id, email, name, picture } },
-//   documents: { [userId]: [ { id, filename, size, uploadedAt, status } ] },
-//   sessions:  { [userId]: [ { id, title, createdAt, messages: [{role, text, ts}] } ] }
-// }
+// Firestore-backed — replaces the local data/db.json file, which does not
+// survive on Cloud Run (each container instance has its own ephemeral
+// filesystem, and instances don't share state with each other).
+//
+// PROJECT_ID must match the same GCP project the Python backend uses
+// (literay_backend/literay_agent/config.py's GOOGLE_CLOUD_PROJECT) — both
+// sides read/write Firestore in the same project.
+//
+// Collections used here (all prefixed `frontend_` except `documents`,
+// which is intentionally the SAME collection ingest_document.py /
+// upload_server.py already write to — see listDocuments below):
+//   frontend_users            one doc per Google user
+//   frontend_sessions         one doc per saved chat session
+//   frontend_quiz_results     one doc per answered quiz question
+//
+// Requires: npm install @google-cloud/firestore
 
-const fs = require('fs');
-const path = require('path');
+const { Firestore } = require('@google-cloud/firestore');
 
-const DB_PATH = path.join(__dirname, '..', 'data', 'db.json');
-
-function emptyDB() {
-  return { users: {}, documents: {}, sessions: {}, quizResults: {} };
-}
-
-function readDB() {
-  try {
-    const raw = fs.readFileSync(DB_PATH, 'utf8');
-    const parsed = JSON.parse(raw);
-    return { ...emptyDB(), ...parsed };
-  } catch (err) {
-    return emptyDB();
-  }
-}
-
-function writeDB(db) {
-  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-  const tmpPath = `${DB_PATH}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(db, null, 2));
-  fs.renameSync(tmpPath, DB_PATH);
-}
+const PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT || 'project-8f7bc805-c4fb-4824-a9e';
+const db = new Firestore({ projectId: PROJECT_ID });
 
 // ---------- users ----------
-function upsertUser(user) {
-  const db = readDB();
-  db.users[user.id] = user;
-  writeDB(db);
+async function upsertUser(user) {
+  await db.collection('frontend_users').doc(user.id).set(user, { merge: true });
   return user;
 }
 
 // ---------- documents ----------
-function listDocuments(userId) {
-  const db = readDB();
-  return db.documents[userId] || [];
+// Deliberately reads the SAME `documents` collection that
+// ingest_document.py / upload_server.py already write to during ingest —
+// there is no separate frontend copy to keep in sync. That means
+// addDocument() below is effectively a no-op/compat shim now: by the time
+// the frontend would call it, the Python side has already written the
+// record.
+async function listDocuments(userId) {
+  // Deliberately no .orderBy() here — combining it with .where() would need
+  // a Firestore composite index provisioned in advance (index build can
+  // take a few minutes and blocks every request until it's ready). Sorting
+  // the handful of documents a single demo user has in JS instead avoids
+  // that entirely, at negligible cost for this data size.
+  const snapshot = await db.collection('documents')
+    .where('user_id', '==', userId)
+    .get();
+
+  const documents = snapshot.docs.map(doc => {
+    const data = doc.data();
+    return {
+      id: doc.id,
+      filename: data.original_file_name,
+      size: data.size || null,
+      uploadedAt: data.upload_timestamp,
+      status: data.indexing_status === 'indexed' ? 'indexed' : 'processing',
+    };
+  });
+
+  documents.sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt));
+  return documents;
 }
 
-function addDocument(userId, doc) {
-  const db = readDB();
-  if (!db.documents[userId]) db.documents[userId] = [];
-  db.documents[userId].unshift(doc);
-  writeDB(db);
+// Kept for interface compatibility with older call sites — normally
+// unnecessary now (see comment above), but harmless if something still
+// calls it directly.
+async function addDocument(userId, doc) {
+  await db.collection('documents').doc(doc.id).set({
+    user_id: userId,
+    original_file_name: doc.filename,
+    size: doc.size || null,
+    upload_timestamp: doc.uploadedAt || new Date().toISOString(),
+    indexing_status: doc.status === 'indexed' ? 'indexed' : 'pending',
+  }, { merge: true });
   return doc;
 }
 
-function deleteDocument(userId, documentId) {
-  const db = readDB();
-  if (db.documents[userId]) {
-    db.documents[userId] = db.documents[userId].filter(d => d.id !== documentId);
-    writeDB(db);
+// Only clears the shared Firestore record as a fallback — the primary
+// delete path (Vertex AI Search + GCS + Firestore, in that order) lives in
+// upload_server.py's DELETE /documents/:id, called over HTTP from
+// server.js. This function existing here too just means "delete" stays
+// correct even if this is ever called directly for some other reason.
+async function deleteDocument(userId, documentId) {
+  const ref = db.collection('documents').doc(documentId);
+  const doc = await ref.get();
+  if (doc.exists && doc.data().user_id === userId) {
+    await ref.delete();
   }
 }
 
 // ---------- chat sessions / history ----------
-function listSessions(userId) {
-  const db = readDB();
-  return db.sessions[userId] || [];
+function sessionDocId(userId, sessionId) {
+  // Composite doc id keeps the collection flat (no subcollections needed)
+  // while still letting us query "all sessions for user X" cheaply.
+  return `${userId}__${sessionId}`;
 }
 
-function getSession(userId, sessionId) {
-  const db = readDB();
-  return (db.sessions[userId] || []).find(s => s.id === sessionId) || null;
+async function listSessions(userId) {
+  // Same reasoning as listDocuments above — sort in JS, skip the composite index.
+  const snapshot = await db.collection('frontend_sessions')
+    .where('userId', '==', userId)
+    .get();
+  const sessions = snapshot.docs.map(doc => doc.data());
+  sessions.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  return sessions;
 }
 
-function saveSession(userId, session) {
-  const db = readDB();
-  if (!db.sessions[userId]) db.sessions[userId] = [];
-  const existingIndex = db.sessions[userId].findIndex(s => s.id === session.id);
-  if (existingIndex >= 0) {
-    db.sessions[userId][existingIndex] = session;
-  } else {
-    db.sessions[userId].push(session);
-  }
-  writeDB(db);
+async function getSession(userId, sessionId) {
+  const doc = await db.collection('frontend_sessions').doc(sessionDocId(userId, sessionId)).get();
+  if (!doc.exists) return null;
+  return doc.data();
+}
+
+async function saveSession(userId, session) {
+  const record = { ...session, userId };
+  await db.collection('frontend_sessions').doc(sessionDocId(userId, session.id)).set(record);
   return session;
 }
 
-function deleteSession(userId, sessionId) {
-  const db = readDB();
-  if (db.sessions[userId]) {
-    db.sessions[userId] = db.sessions[userId].filter(s => s.id !== sessionId);
-    writeDB(db);
-  }
+async function deleteSession(userId, sessionId) {
+  await db.collection('frontend_sessions').doc(sessionDocId(userId, sessionId)).delete();
 }
 
-// ---------- quiz results (ใช้คำนวณหน้า Progress จากพฤติกรรมจริงของผู้ใช้) ----------
+async function renameSession(userId, sessionId, title) {
+  const ref = db.collection('frontend_sessions').doc(sessionDocId(userId, sessionId));
+  const doc = await ref.get();
+  if (!doc.exists) return null;
+  await ref.update({ title });
+  return { ...doc.data(), title };
+}
 
-// บันทึกผลตอบคำถามควิซ 1 ข้อ
+// ---------- quiz results ----------
 // result: { documentId, questionId, question, clauseName, correct }
-function addQuizResult(userId, result) {
-  const db = readDB();
-  if (!db.quizResults[userId]) db.quizResults[userId] = [];
-  db.quizResults[userId].push({
+async function addQuizResult(userId, result) {
+  await db.collection('frontend_quiz_results').add({
+    userId,
     documentId: result.documentId,
     questionId: result.questionId || null,
     question: result.question || null,
@@ -111,20 +139,17 @@ function addQuizResult(userId, result) {
     correct: !!result.correct,
     answeredAt: new Date().toISOString()
   });
-  writeDB(db);
 }
 
-// ดึงผลตอบทั้งหมดของ user (กรองตาม documentId ได้ถ้าระบุ)
-function getQuizResults(userId, documentId) {
-  const db = readDB();
-  const all = db.quizResults[userId] || [];
-  return documentId ? all.filter(r => r.documentId === documentId) : all;
+async function getQuizResults(userId, documentId) {
+  let query = db.collection('frontend_quiz_results').where('userId', '==', userId);
+  if (documentId) query = query.where('documentId', '==', documentId);
+  const snapshot = await query.get();
+  return snapshot.docs.map(doc => doc.data());
 }
 
-// สรุปผลสำหรับหน้า Progress: { correct, total, weakClauses: [{name, ratio}] }
-// weakClauses เรียงจาก clause ที่ตอบผิดบ่อยที่สุดไปน้อยที่สุด เอาแค่ top 5
-function getProgressSummary(userId, documentId) {
-  const results = getQuizResults(userId, documentId);
+async function getProgressSummary(userId, documentId) {
+  const results = await getQuizResults(userId, documentId);
   const total = results.length;
   const correct = results.filter(r => r.correct).length;
 
@@ -146,8 +171,6 @@ function getProgressSummary(userId, documentId) {
 }
 
 module.exports = {
-  readDB,
-  writeDB,
   upsertUser,
   listDocuments,
   addDocument,
@@ -156,6 +179,7 @@ module.exports = {
   getSession,
   saveSession,
   deleteSession,
+  renameSession,
   addQuizResult,
   getQuizResults,
   getProgressSummary

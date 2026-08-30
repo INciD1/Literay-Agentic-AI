@@ -1,11 +1,11 @@
 """
-Standalone upload API — wraps ingest_document.py's logic behind an HTTP
-endpoint so the frontend can actually upload files (ingest_document.py was
-previously CLI-only).
-
-Runs as a SEPARATE small server from the ADK agent (adk api_server already
-owns port 8000 and its own routing) — run this on its own port instead of
-trying to bolt a file-upload route onto the ADK server.
+Standalone upload/document-management API — wraps ingest_document.py and
+delete_document.py's logic behind HTTP endpoints so server.js (Node) never
+has to spawn a Python child process directly. That spawn approach only
+works when both processes share a filesystem/venv on the same machine —
+it breaks the moment upload_server.py and the Node frontend are deployed
+as two separate Cloud Run services (separate containers, no shared
+filesystem, no `../.venv` to find).
 
 Run:
     pip install fastapi "uvicorn[standard]" python-multipart --break-system-packages
@@ -13,8 +13,10 @@ Run:
     # serves on http://localhost:8001
 
 Endpoints:
-    POST /ingest          multipart file + user_id -> {document_id, status}
-    GET  /status/{doc_id} -> {indexing_status, ...} (polls Firestore)
+    POST   /ingest                multipart file + user_id -> {document_id, status}
+    GET    /status/{doc_id}       -> {indexing_status, ...} (polls Vertex AI Search directly)
+    DELETE /documents/{doc_id}?user_id=...  -> mirrors delete_document.py's exit-code semantics as HTTP status
+    GET    /progress/{user_id}    -> {clauses: {...}} (from Firestore quiz_log — see memory_tools.py)
 """
 from __future__ import annotations
 
@@ -25,29 +27,44 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from google.api_core.client_options import ClientOptions
+from google.api_core.exceptions import NotFound
 from google.cloud import discoveryengine_v1 as discoveryengine
 from google.cloud import firestore, storage
 
-# --- Must match ingest_document.py's config exactly ---
+# --- Must match ingest_document.py / delete_document.py's config exactly ---
 PROJECT_ID = "project-8f7bc805-c4fb-4824-a9e"
 LOCATION = "global"
 BUCKET_NAME = "literay-documents"
 DATA_STORE_ID = "maindatastore_1787501435502"
-# --------------------------------------------------------
+# ----------------------------------------------------------------------------
 
-app = FastAPI(title="Literay upload service")
+app = FastAPI(title="Literay upload/document service")
 
-# Wide open for local dev; tighten to the real frontend origin before/at deploy.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # tighten to the real frontend origin before/at deploy
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
+def _serving_client_options() -> ClientOptions | None:
+    return ClientOptions(api_endpoint="discoveryengine.googleapis.com") if LOCATION == "global" else None
+
+
+def _document_resource_name(document_id: str) -> str:
+    return (
+        f"projects/{PROJECT_ID}/locations/{LOCATION}/collections/default_collection"
+        f"/dataStores/{DATA_STORE_ID}/branches/default_branch/documents/{document_id}"
+    )
+
+
+# ============================================================================
+# Ingest (unchanged from before)
+# ============================================================================
 
 def _upload_to_gcs(local_path: Path, document_id: str, original_name: str) -> str:
     client = storage.Client(project=PROJECT_ID)
@@ -60,16 +77,14 @@ def _upload_to_gcs(local_path: Path, document_id: str, original_name: str) -> st
 
 def _write_firestore_record(document_id: str, user_id: str, gcs_uri: str, filename: str) -> None:
     db = firestore.Client(project=PROJECT_ID)
-    db.collection("documents").document(document_id).set(
-        {
-            "user_id": user_id,
-            "original_file_name": filename,
-            "gcs_uri": gcs_uri,
-            "data_store_id": DATA_STORE_ID,
-            "indexing_status": "pending",
-            "upload_timestamp": datetime.datetime.utcnow().isoformat(),
-        }
-    )
+    db.collection("documents").document(document_id).set({
+        "user_id": user_id,
+        "original_file_name": filename,
+        "gcs_uri": gcs_uri,
+        "data_store_id": DATA_STORE_ID,
+        "indexing_status": "pending",
+        "upload_timestamp": datetime.datetime.utcnow().isoformat(),
+    })
 
 
 def _import_to_datastore(document_id: str, gcs_uri: str, mime_type: str) -> str:
@@ -86,12 +101,7 @@ def _import_to_datastore(document_id: str, gcs_uri: str, mime_type: str) -> str:
     )
     manifest_uri = f"gs://{BUCKET_NAME}/{manifest_blob_name}"
 
-    client_options = (
-        ClientOptions(api_endpoint="discoveryengine.googleapis.com")
-        if LOCATION == "global"
-        else None
-    )
-    doc_client = discoveryengine.DocumentServiceClient(client_options=client_options)
+    doc_client = discoveryengine.DocumentServiceClient(client_options=_serving_client_options())
     parent = (
         f"projects/{PROJECT_ID}/locations/{LOCATION}/collections/default_collection"
         f"/dataStores/{DATA_STORE_ID}/branches/default_branch"
@@ -136,35 +146,20 @@ def _check_indexed_in_datastore(document_id: str) -> bool:
     """Ground-truth check: does this document actually exist in the Vertex
     AI Search datastore yet? We do NOT trust a Firestore flag for this —
     nothing updates it automatically once the async import finishes on
-    Google's side, so a stored "pending"/"indexed" field would just go
-    stale forever. Querying Discovery Engine directly is slower per call
+    Google's side. Querying Discovery Engine directly is slower per call
     but always correct.
     """
-    client_options = (
-        ClientOptions(api_endpoint="discoveryengine.googleapis.com")
-        if LOCATION == "global"
-        else None
-    )
-    doc_client = discoveryengine.DocumentServiceClient(client_options=client_options)
-    name = (
-        f"projects/{PROJECT_ID}/locations/{LOCATION}/collections/default_collection"
-        f"/dataStores/{DATA_STORE_ID}/branches/default_branch/documents/{document_id}"
-    )
+    doc_client = discoveryengine.DocumentServiceClient(client_options=_serving_client_options())
     try:
-        doc_client.get_document(name=name)
+        doc_client.get_document(name=_document_resource_name(document_id))
         return True
     except Exception:
-        # NotFound (still importing) or any transient error — treat as "not
-        # ready yet" rather than crashing the status endpoint.
         return False
 
 
 @app.get("/status/{document_id}")
 async def status(document_id: str):
-    """Frontend polls this after upload to know when indexing is done.
-    Checks Vertex AI Search directly (ground truth), then updates Firestore
-    to match so other reads of the document record stay in sync too.
-    """
+    """Frontend polls this after upload to know when indexing is done."""
     db = firestore.Client(project=PROJECT_ID)
     ref = db.collection("documents").document(document_id)
     doc = ref.get()
@@ -184,10 +179,82 @@ async def status(document_id: str):
     }
 
 
+# ============================================================================
+# Delete — ported from delete_document.py. Same three steps, same ownership
+# check, same "leave Firestore record in place on partial failure so a retry
+# has something to go on" behavior — just returning HTTP status instead of
+# process exit codes, since server.js now calls this over HTTP instead of
+# spawning the script.
+#
+# Status code mapping (mirrors delete_document.py's docstring):
+#   200  deleted (fully, or was already absent — nothing left to point to either way)
+#   403  document_id exists but belongs to a different user_id
+#   502  found and owned by this user_id, but a delete step failed partway —
+#        Firestore record deliberately left in place for a retry
+#   404  never used here (absent = 200, see above) but kept available for
+#        symmetry with /status's 404
+# ============================================================================
+
+def _delete_from_datastore(document_id: str) -> None:
+    doc_client = discoveryengine.DocumentServiceClient(client_options=_serving_client_options())
+    try:
+        doc_client.delete_document(name=_document_resource_name(document_id))
+    except NotFound:
+        pass
+
+
+def _delete_from_gcs(document_id: str) -> None:
+    storage_client = storage.Client(project=PROJECT_ID)
+    bucket = storage_client.bucket(BUCKET_NAME)
+    for blob in storage_client.list_blobs(bucket, prefix=f"{document_id}/"):
+        blob.delete()
+    manifest_blob = bucket.blob(f"_manifests/{document_id}.jsonl")
+    if manifest_blob.exists():
+        manifest_blob.delete()
+
+
+@app.delete("/documents/{document_id}")
+async def delete_document(document_id: str, user_id: str = Query(...)):
+    db = firestore.Client(project=PROJECT_ID)
+    ref = db.collection("documents").document(document_id)
+    doc = ref.get()
+
+    if not doc.exists:
+        # Nothing at the source at all — 200 so the caller can safely clear
+        # its own local record too, there's nothing left to point to.
+        return {"status": "not_found", "document_id": document_id}
+
+    data = doc.to_dict()
+    if data.get("user_id") != user_id:
+        raise HTTPException(403, "This document does not belong to you.")
+
+    errors: list[str] = []
+    try:
+        _delete_from_datastore(document_id)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"search index: {exc}")
+    try:
+        _delete_from_gcs(document_id)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"gcs: {exc}")
+
+    if errors:
+        # Leave the Firestore record in place on partial failure — it's the
+        # only evidence left that cleanup is still incomplete.
+        raise HTTPException(502, f"Partial delete failure: {errors}")
+
+    ref.delete()
+    return {"status": "deleted", "document_id": document_id}
+
+
+# ============================================================================
+# Progress summary (unchanged from before)
+# ============================================================================
+
 @app.get("/progress/{user_id}")
 async def progress(user_id: str):
     """Aggregates this user's quiz_log entries by clause_type, for the
-    Progress view — {clause_type: -> total, correct}.
+    Progress view — {clause_type -> total, correct}.
     """
     db = firestore.Client(project=PROJECT_ID)
     docs = db.collection("quiz_log").where("user_id", "==", user_id).stream()
@@ -205,6 +272,10 @@ async def progress(user_id: str):
 
 
 if __name__ == "__main__":
+    import os
+
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    # Cloud Run injects PORT and requires the container to listen on it —
+    # 8001 stays as the local-dev fallback.
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8001)))

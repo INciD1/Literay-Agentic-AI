@@ -177,6 +177,102 @@ function showToast(message, type = 'error') {
   toast._hideTimer = setTimeout(() => toast.classList.remove('show'), 3200);
 }
 
+function showPromptModal({ title = 'Enter a value', message = '', defaultValue = '', confirmLabel = 'Save' } = {}) {
+  return new Promise((resolve) => {
+    let modal = document.getElementById('prompt-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'prompt-modal';
+      modal.className = 'prompt-modal-overlay';
+      modal.innerHTML = `
+        <div class="prompt-modal-box">
+          <div class="prompt-modal-title" id="prompt-modal-title"></div>
+          <div class="prompt-modal-message" id="prompt-modal-message"></div>
+          <input type="text" id="prompt-modal-input" class="prompt-modal-input" />
+          <div class="prompt-modal-actions">
+            <button type="button" class="btn btn-ghost" id="prompt-modal-cancel">Cancel</button>
+            <button type="button" class="btn btn-primary" id="prompt-modal-confirm">Save</button>
+          </div>
+        </div>`;
+      document.body.appendChild(modal);
+    }
+
+    modal.querySelector('#prompt-modal-title').textContent = title;
+    const msgEl = modal.querySelector('#prompt-modal-message');
+    msgEl.textContent = message;
+    msgEl.style.display = message ? 'block' : 'none';
+    const input = modal.querySelector('#prompt-modal-input');
+    input.value = defaultValue;
+    const confirmBtn = modal.querySelector('#prompt-modal-confirm');
+    const cancelBtn = modal.querySelector('#prompt-modal-cancel');
+    confirmBtn.textContent = confirmLabel;
+
+    function cleanup(result) {
+      modal.classList.remove('open');
+      confirmBtn.removeEventListener('click', onConfirm);
+      cancelBtn.removeEventListener('click', onCancel);
+      modal.removeEventListener('click', onOverlay);
+      input.removeEventListener('keydown', onKeydown);
+      resolve(result);
+    }
+    function onConfirm() { cleanup(input.value.trim() || null); }
+    function onCancel() { cleanup(null); }
+    function onOverlay(e) { if (e.target === modal) cleanup(null); }
+    function onKeydown(e) {
+      if (e.key === 'Escape') cleanup(null);
+      if (e.key === 'Enter') { e.preventDefault(); cleanup(input.value.trim() || null); }
+    }
+
+    confirmBtn.addEventListener('click', onConfirm);
+    cancelBtn.addEventListener('click', onCancel);
+    modal.addEventListener('click', onOverlay);
+    input.addEventListener('keydown', onKeydown);
+
+    modal.classList.add('open');
+    requestAnimationFrame(() => { input.focus(); input.select(); });
+  });
+}
+
+(function injectPromptModalStyles() {
+  if (document.getElementById('prompt-modal-styles')) return;
+  const style = document.createElement('style');
+  style.id = 'prompt-modal-styles';
+  style.textContent = `
+    .prompt-modal-overlay {
+      position: fixed; inset: 0; z-index: 10000;
+      background: rgba(30, 44, 66, 0.45);
+      display: none; align-items: center; justify-content: center;
+    }
+    .prompt-modal-overlay.open { display: flex; }
+    .prompt-modal-box {
+      background: var(--white, #fff);
+      border-radius: 14px;
+      padding: 22px 24px;
+      width: 100%; max-width: 380px;
+      box-shadow: 0 12px 32px rgba(0,0,0,0.18);
+    }
+    .prompt-modal-title {
+      font-family: 'Source Serif 4', serif;
+      font-size: 17px; font-weight: 600;
+      color: var(--navy, #2C3E5C);
+      margin-bottom: 6px;
+    }
+    .prompt-modal-message {
+      font-size: 12.5px; color: var(--text-muted, #786F5C);
+      margin-bottom: 12px;
+    }
+    .prompt-modal-input {
+      width: 100%; box-sizing: border-box;
+      border: 1px solid var(--border, #E4DDC9); border-radius: 8px;
+      padding: 9px 12px; font-size: 13.5px; font-family: 'Inter', sans-serif;
+      outline: none; margin-bottom: 16px;
+    }
+    .prompt-modal-input:focus { border-color: var(--blue-light, #7C9CF5); }
+    .prompt-modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  `;
+  document.head.appendChild(style);
+})();
+
 (function injectConfirmAndToastStyles() {
   if (document.getElementById('confirm-toast-styles')) return;
   const style = document.createElement('style');
@@ -341,7 +437,7 @@ if (window.marked) {
   marked.setOptions({ gfm: true, breaks: true });
 }
 
-function appendMessage(role, text, { record = true } = {}) {
+function appendMessage(role, text, { record = true, weakSpots = [] } = {}) {
   const row = document.createElement('div');
   row.className = `msg-row ${role}`;
   const avatar = role === 'user' ? (currentUser?.name?.charAt(0).toUpperCase() || 'U') : 'A';
@@ -356,6 +452,20 @@ function appendMessage(role, text, { record = true } = {}) {
     // เก็บการขึ้นบรรทัดใหม่ไว้แทนที่จะปล่อยให้ข้อความทั้งหมดอัดเป็นบรรทัดเดียว
     bubble.textContent = text;
     bubble.classList.add('bubble-plain');
+  }
+
+  // "Agent remembers you" indicator — only shown when get_document_metadata
+  // actually found a prior weak spot for this topic (real tool output, not
+  // guessed from the model's wording). See extractMemorySignal in server.js.
+  if (role === 'agent' && weakSpots.length) {
+    const badge = document.createElement('div');
+    badge.className = 'memory-badge';
+    badge.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/></svg>
+      <span><b>Remembered from before:</b> <span class="memory-badge-text"></span></span>
+    `;
+    badge.querySelector('.memory-badge-text').textContent = weakSpots.join(' ');
+    bubble.appendChild(badge);
   }
 
   chatScroll.appendChild(row);
@@ -452,7 +562,11 @@ async function sendChatMessage(message) {
   if (!response.ok) {
     throw new Error(payload.error || 'The assistant backend returned an error.');
   }
-  return payload.message;
+  return {
+    text: payload.message,
+    usedMemory: !!payload.usedMemory,
+    weakSpots: Array.isArray(payload.weakSpots) ? payload.weakSpots : []
+  };
 }
 
 async function handleSend(retryMessage) {
@@ -472,7 +586,7 @@ async function handleSend(retryMessage) {
     const reply = await sendChatMessage(message);
     lastFailedMessage = null;
     hideTypingIndicator();
-    appendMessage('agent', reply);
+    appendMessage('agent', reply.text, { weakSpots: reply.weakSpots });
   } catch (error) {
     console.error('Chat request failed:', error);
     lastFailedMessage = message;
@@ -593,8 +707,12 @@ if (historyModal) {
 }
 
 async function renameSession(session, titleEl) {
-  const newTitle = window.prompt('Rename this conversation:', session.title || '');
-  if (newTitle === null || !newTitle.trim() || newTitle.trim() === session.title) return;
+  const newTitle = await showPromptModal({
+    title: 'Rename this conversation',
+    defaultValue: session.title || '',
+    confirmLabel: 'Save'
+  });
+  if (newTitle === null || newTitle === session.title) return;
   try {
     const res = await fetch(`/api/v1/sessions/${session.id}`, {
       method: 'PATCH',
@@ -725,7 +843,15 @@ function renderProgressDocList(documents) {
       </div>
       <div class="progress-doc-detail"><div class="empty-state">Click to load progress…</div></div>
     `;
-    row.addEventListener('click', () => toggleProgressDetail(row, doc));
+    // Only the head (filename + score line) toggles expand/collapse — NOT
+    // the whole row. The expanded detail area holds quiz-answer buttons,
+    // "Ask again", "Regenerate quiz", etc., and their click events bubble
+    // up through `row` (there's no stopPropagation on any of them, and
+    // there will keep being more of them every time a new quiz renders).
+    // Listening on `row` meant every one of those clicks ALSO re-triggered
+    // this same toggle — which the code below treats as "already open,
+    // collapse it" — so answering a quiz question closed the whole panel.
+    row.querySelector('.progress-doc-head').addEventListener('click', () => toggleProgressDetail(row, doc));
     container.appendChild(row);
   });
 }
@@ -1065,6 +1191,30 @@ if (dropzone && uploadList) {
       ui.setStatus('error', 'failed');
       ui.setProgress(0, 'Could not reach the server.');
     }
+  }
+
+  // ===== Chat composer's attach (paperclip) button =====
+  // Was never wired up before — no id, no listener anywhere. Reuses this
+  // same uploadFile() so it gets the exact same progress UI / polling /
+  // error handling as a normal drag-and-drop upload; only difference is
+  // it's triggered from the chat view and switches to the Upload view
+  // first so the progress is actually visible.
+  const attachBtn = document.querySelector('.composer .icon-btn.ghost');
+  if (attachBtn) {
+    const attachFileInput = document.createElement('input');
+    attachFileInput.type = 'file';
+    attachFileInput.accept = '.pdf,.jpg,.jpeg,.png';
+    attachFileInput.style.display = 'none';
+    document.body.appendChild(attachFileInput);
+
+    attachBtn.addEventListener('click', () => attachFileInput.click());
+    attachFileInput.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      attachFileInput.value = ''; // reset so picking the same file again still fires "change"
+      if (!file) return;
+      document.querySelector('.nav-item[data-view="upload"]')?.click();
+      uploadFile(file);
+    });
   }
 }
 
