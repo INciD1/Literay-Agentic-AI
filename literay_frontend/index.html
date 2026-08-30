@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ContractSense AI — a contract assistant that remembers you</title>
+<title>Literay Agentic AI — Turns dense documents into a dialogue you actually understand.</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@500;600&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/styles.css">
@@ -15,18 +15,25 @@
   <div class="topbar">
     <div class="brand">
       <div class="brand-mark">
-        <img src="assets/images/WEB LOGO.png" alt="ContractSense AI logo">
+        <img src="assets/images/WEB LOGO.png" alt="Literay logo">
       </div>
     </div>
     <div class="topbar-right">
-      <div class="infra-chip">
-        <span class="dot pulse"></span>
-        cloud run · contract-agent-api-7f2ac.a.run.app
-      </div>
-      <div class="user-chip">
-        <div class="avatar">F</div>
-        <span>Fluke</span> 
-        <span class="uid">uid_8841a2</span>
+      <!-- user-chip is now a dropdown trigger; contents are filled in by app.js from /api/auth/me -->
+      <div class="user-menu-wrap">
+        <button class="user-chip" id="user-menu-trigger" type="button">
+          <div class="avatar" id="user-avatar">?</div>
+          <span id="user-name">Loading…</span>
+          <span class="uid" id="current-uid"></span>
+          <svg class="chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="user-menu-dropdown" id="user-menu-dropdown">
+          <div class="user-menu-email" id="user-email"></div>
+          <button class="user-menu-item" id="logout-btn" type="button">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+            Sign out
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -38,10 +45,10 @@
     <div class="sidebar">
       <div class="session-block">
         <div class="eyebrow">current session</div>
-        <div class="session-id">session_2026-08-23_04</div>
+        <div class="session-id" id="current-session-id">—</div>
         <div style="display:flex;gap:8px;margin-top:10px;">
-          <button class="btn btn-primary" style="flex:1;">+ New session</button>
-          <button class="btn btn-ghost">History</button>
+          <button class="btn btn-primary" id="new-session-btn" style="flex:1;">+ New session</button>
+          <button class="btn btn-ghost" id="history-btn">History</button>
         </div>
       </div>
 
@@ -61,20 +68,10 @@
       </div>
 
       <div class="section-label">Uploaded documents</div>
-      <div class="doc-item active">
-        <div class="doc-name">Office_Lease_Agreement.pdf</div>
-        <div class="doc-meta">Uploaded Aug 22 · 4.2 MB</div>
-        <span class="status-pill status-done">indexed</span>
-      </div>
-      <div class="doc-item">
-        <div class="doc-name">Employment_Contract_Draft2.pdf</div>
-        <div class="doc-meta">Uploaded Aug 18 · 1.1 MB</div>
-        <span class="status-pill status-done">indexed</span>
-      </div>
-      <div class="doc-item">
-        <div class="doc-name">NDA_Vendor_Partner.pdf</div>
-        <div class="doc-meta">Uploaded Aug 10 · 0.8 MB</div>
-        <span class="status-pill status-done">indexed</span>
+      <!-- ของเดิม hardcode ไฟล์ตัวอย่างไว้ตรงนี้ — ตอนนี้ปล่อยว่าง ให้ app.js
+           ดึงจาก GET /api/v1/documents มาสร้างจริงแทน (ดู renderDocumentList) -->
+      <div id="document-list">
+        <div class="empty-state" id="document-list-empty">No documents yet. Upload one to get started.</div>
       </div>
     </div>
 
@@ -85,70 +82,21 @@
       <div class="view active" id="view-chat">
         <div class="chat-header">
           <div>
-            <div class="doc-title">Office_Lease_Agreement.pdf</div>
-            <div class="doc-sub">Document indexed · grounded via Vertex Search RAG</div>
+            <div class="doc-title" id="active-doc-title">No document selected</div>
+            <div class="doc-sub" id="active-doc-sub">Upload or select a document to ground answers in it</div>
           </div>
-          <button class="btn btn-ghost" id="simulate-error-btn">Simulate error state</button>
         </div>
 
         <div class="chat-scroll" id="chat-scroll">
-
-          <div class="msg-row user">
-            <div class="msg-avatar">F</div>
-            <div class="bubble">What does the indemnification clause in this contract actually cover?</div>
-          </div>
-
-          <div class="thinking-row">
-            <div class="thinking-chip">
-              Searching the document · <span class="thinking-tool">search_document()</span>
-              <span class="tdots"><span>•</span><span>•</span><span>•</span></span>
-            </div>
-          </div>
-
-          <div class="msg-row agent">
-            <div class="msg-avatar">A</div>
-            <div>
-              <div class="bubble">
-                The indemnification clause (Section 9.3) covers two main scenarios: damage from misuse of the premises, and damage to a third party caused directly by the tenant. The landlord isn't liable for damage caused by force majeure.
-                <div class="citation-card">
-                  <div class="label">
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
-                    Cited from Section 9.3
-                  </div>
-                  <div class="quote">"The tenant agrees to indemnify all damages incurred by third parties arising from the tenant's actions...except in cases of force majeure."</div>
-                </div>
-                <div class="memory-badge">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 2"/><circle cx="12" cy="12" r="9"/></svg>
-                  <span><b>Remembered from last time:</b> you asked about this in the NDA a week ago and mixed up indemnification with liability limitation — this time I've kept the two terms clearly separate.</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="quiz-card">
-            <div class="quiz-head">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>
-              Comprehension check
-            </div>
-            <div class="quiz-body">
-              <div class="quiz-q">If force majeure causes damage to a third party, who is liable under Section 9.3?</div>
-              <div class="quiz-options">
-                <div class="quiz-opt" data-correct="false">The tenant is always liable, no exceptions</div>
-                <div class="quiz-opt" data-correct="true">Neither party is liable — it falls under the force majeure exception</div>
-                <div class="quiz-opt" data-correct="false">The landlord is liable on the tenant's behalf</div>
-              </div>
-              <div class="quiz-feedback" id="quiz-feedback"></div>
-            </div>
-          </div>
-
+           <!-- ข้อความจะถูกเพิ่มเข้ามาที่นี่ผ่าน app.js -->
         </div>
 
         <div class="composer">
-          <input type="text" placeholder="Ask a question about your contract...">
+          <textarea id="chat-input" rows="1" placeholder="Ask a question about your contract... (Shift+Enter for a new line)"></textarea>
           <button class="icon-btn ghost">
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21.44 11.05l-9.19 9.19a5 5 0 01-7.07-7.07l9.19-9.19a3.5 3.5 0 014.95 4.95l-9.2 9.19a1.5 1.5 0 01-2.12-2.12l8.49-8.48"/></svg>
           </button>
-          <button class="icon-btn">
+          <button class="icon-btn" id="send-btn">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12l16-8-6 16-2-7-8-1z"/></svg>
           </button>
         </div>
@@ -159,19 +107,21 @@
         <div class="upload-wrap">
           <div class="eyebrow" style="margin-bottom:8px;">Upload a document</div>
           <h2 style="font-size:20px;margin-bottom:16px;">Start by uploading a contract</h2>
-          <div class="dropzone">
+          <div class="dropzone" id="upload-dropzone">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4M7 9l5-5 5 5M4 20h16"/></svg>
             <div class="dz-title">Drag a file here, or click to browse</div>
             <div class="dz-sub">Supports PDF and photos of contracts (JPG, PNG) · up to 20MB</div>
           </div>
 
-          <div class="upload-item">
-            <div style="flex:1;">
-              <div style="font-size:13px;font-weight:500;">Office_Lease_Agreement.pdf</div>
-              <div style="font-size:11.5px;color:var(--text-muted);margin-top:2px;">Processing — building the RAG index (this can take 30–60 seconds)</div>
-              <div class="progress-track"><div class="progress-fill" style="width:64%;"></div></div>
-            </div>
-            <span class="status-pill status-processing">indexing</span>
+          <!-- รายการอัปโหลดจริง (แทนที่ alert() เดิม) — app.js เติม .upload-item เข้ามาที่นี่
+               ทีละไฟล์ พร้อม progress bar + status pill ที่อัปเดตสดตาม polling -->
+          <div id="upload-list"></div>
+
+          <!-- เอกสารที่เคยอัพโหลดไว้แล้ว (จาก GET /api/v1/documents) — แยกจาก upload-list
+               ด้านบนซึ่งใช้แสดง progress ของไฟล์ที่กำลังอัพโหลดในเซสชันนี้เท่านั้น -->
+          <div class="section-label" style="margin-top:28px;">Previously uploaded</div>
+          <div id="upload-existing-list">
+            <div class="empty-state" id="upload-existing-empty">No documents yet.</div>
           </div>
         </div>
       </div>
@@ -180,53 +130,53 @@
       <div class="view" id="view-progress">
         <div class="progress-wrap">
           <div class="eyebrow" style="margin-bottom:8px;">Your understanding, at a glance</div>
-          <h2 style="font-size:20px;margin-bottom:20px;">Strengths and clauses to review</h2>
-
-          <div class="clause-row">
-            <div class="clause-top"><span>Indemnification</span><span style="color:var(--terracotta-deep);">Weak — 2/5 correct</span></div>
-            <div class="bar-track"><div class="bar-fill" style="width:40%;background:var(--terracotta);"></div></div>
-          </div>
-          <div class="clause-row">
-            <div class="clause-top"><span>Termination clause</span><span style="color:var(--sage-deep);">Strong — 5/6 correct</span></div>
-            <div class="bar-track"><div class="bar-fill" style="width:83%;background:var(--sage);"></div></div>
-          </div>
-          <div class="clause-row">
-            <div class="clause-top"><span>Limitation of liability</span><span style="color:var(--brass-deep);">Moderate — 3/5 correct</span></div>
-            <div class="bar-track"><div class="bar-fill" style="width:60%;background:var(--brass);"></div></div>
-          </div>
-          <div class="clause-row">
-            <div class="clause-top"><span>Confidentiality (NDA)</span><span style="color:var(--sage-deep);">Strong — 4/4 correct</span></div>
-            <div class="bar-track"><div class="bar-fill" style="width:100%;background:var(--sage);"></div></div>
+          <h2 style="font-size:20px;margin-bottom:20px;">Pick a document to see your score</h2>
+          <!-- app.js เติม .progress-doc-row ต่อเอกสารเข้ามาที่นี่ (ดู renderProgressDocList) -->
+          <div id="progress-doc-list">
+            <div class="empty-state">No documents yet. Upload one to start tracking progress.</div>
           </div>
         </div>
       </div>
 
     </div>
 
-    <!-- RIGHT PANEL -->
-    <div class="right-panel">
-      <div class="eyebrow" style="margin-bottom:10px;">Memory bank recall</div>
-      <div class="mem-item">
-        <span class="mem-tag">Aug 10 · NDA_Vendor_Partner</span>
-        Mixed up indemnification with liability limitation
-      </div>
-      <div class="mem-item">
-        <span class="mem-tag">Aug 18 · Employment_Contract_Draft2</span>
-        Solid grasp of the termination clause — answered every question correctly
-      </div>
-      <div class="mem-item">
-        <span class="mem-tag">Aug 22 · this session</span>
-        Reviewing indemnification again, this time in the lease agreement
-      </div>
-
-      <div class="stack-strip">
-        adk agent · gemini · vertex search · firestore · cloud run
-      </div>
-    </div>
-
   </div>
 </div>
 
+<!-- HISTORY MODAL -->
+<div class="modal-overlay" id="history-modal">
+  <div class="modal-panel">
+    <div class="modal-header">
+      <span>Chat history</span>
+      <button class="icon-btn ghost" id="history-close-btn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="modal-body" id="history-list">
+      <div class="empty-state">No saved conversations yet — click "New session" after chatting to save one here.</div>
+    </div>
+  </div>
+</div>
+
+<!-- CONFIRM MODAL — ใช้แทน window.confirm() ของเบราว์เซอร์ ให้ดูสอดคล้องกับดีไซน์แอป -->
+<div class="modal-overlay" id="confirm-modal">
+  <div class="modal-panel" style="max-width:380px;">
+    <div class="modal-header">
+      <span id="confirm-modal-title">Confirm</span>
+    </div>
+    <div class="modal-body" style="padding:18px 4px 22px;">
+      <p id="confirm-modal-message" style="font-size:14px;color:var(--navy);line-height:1.55;margin:0;"></p>
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;padding:0 2px 2px;">
+      <button class="btn btn-ghost" id="confirm-modal-cancel" type="button">Cancel</button>
+      <button class="btn btn-primary" id="confirm-modal-confirm" type="button">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- ใช้แปลงข้อความตอบกลับของ agent (markdown) ให้เป็น HTML ที่จัดรูปแบบสวยงาม -->
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

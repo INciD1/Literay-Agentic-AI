@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sign in — ContractSense AI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@500;600&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/styles.css">
+<style>
+  body{
+    height:100vh;overflow:auto;
+    display:flex;align-items:center;justify-content:center;
+    background:
+      radial-gradient(circle at 15% 20%, rgba(124,156,245,0.16), transparent 45%),
+      radial-gradient(circle at 85% 80%, rgba(217,142,92,0.14), transparent 45%),
+      var(--cream-bg);
+  }
+  .login-card{
+    width:380px;max-width:90vw;
+    background:var(--white);
+    border:1px solid var(--border);
+    border-radius:16px;
+    padding:36px 32px 32px;
+    box-shadow:0 18px 40px -20px rgba(30,44,66,0.25);
+    text-align:center;
+  }
+  .login-logo{height:44px;margin-bottom:22px;}
+  .login-title{font-size:19px;margin-bottom:6px;}
+  .login-sub{font-size:13px;color:var(--text-muted);margin-bottom:26px;line-height:1.6;}
+  #g_id_button{display:flex;justify-content:center;margin-bottom:14px;min-height:44px;}
+  .login-fallback{
+    display:none;font-size:12.5px;color:var(--text-muted);
+    background:var(--cream-bg);border:1px solid var(--border);
+    border-radius:8px;padding:10px 12px;margin-top:6px;line-height:1.6;
+  }
+  .login-fallback code{font-family:'IBM Plex Mono',monospace;font-size:11.5px;}
+  .login-error{
+    display:none;margin-top:14px;font-size:12.5px;color:var(--terracotta-deep);
+    background:#FBEFE6;border:1px solid var(--terracotta);border-radius:8px;padding:9px 12px;
+  }
+  .login-footer{margin-top:24px;font-family:'IBM Plex Mono',monospace;font-size:10.5px;color:var(--text-muted);}
+</style>
+</head>
+<body>
+
+  <div class="login-card">
+    <img class="login-logo" src="assets/images/WEB LOGO.png" alt="ContractSense AI logo">
+    <div class="login-title">Sign in to ContractSense AI</div>
+    <div class="login-sub">Your contracts, questions, and memory bank are tied to your Google account.</div>
+
+    <div id="g_id_button"></div>
+
+    <div class="login-fallback" id="config-missing">
+      Google sign-in isn't configured yet. An admin needs to set <code>GOOGLE_CLIENT_ID</code> in the server's <code>.env</code> file.
+    </div>
+    <div class="login-error" id="login-error"></div>
+
+    <div class="login-footer">contract-agent-api-7f2ac.a.run.app</div>
+  </div>
+
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script>
+    async function handleCredentialResponse(response) {
+      const errorBox = document.getElementById('login-error');
+      errorBox.style.display = 'none';
+      try {
+        const res = await fetch('/api/auth/google', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ credential: response.credential })
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || 'Sign-in failed.');
+        }
+        window.location.href = '/';
+      } catch (err) {
+        errorBox.textContent = err.message || 'Something went wrong signing you in. Please try again.';
+        errorBox.style.display = 'block';
+      }
+    }
+
+    (async function initGoogleSignIn() {
+      try {
+        const res = await fetch('/api/auth/config');
+        const { clientId } = await res.json();
+
+        if (!clientId) {
+          document.getElementById('config-missing').style.display = 'block';
+          return;
+        }
+
+        // google.accounts.id is injected by the gsi/client script above —
+        // it may still be loading, so poll briefly before giving up.
+        const waitForGoogle = () => new Promise((resolve, reject) => {
+          let tries = 0;
+          const timer = setInterval(() => {
+            if (window.google && window.google.accounts && window.google.accounts.id) {
+              clearInterval(timer);
+              resolve();
+            } else if (++tries > 40) {
+              clearInterval(timer);
+              reject(new Error('Google script failed to load.'));
+            }
+          }, 100);
+        });
+        await waitForGoogle();
+
+        google.accounts.id.initialize({
+          client_id: clientId,
+          callback: handleCredentialResponse
+        });
+        google.accounts.id.renderButton(
+          document.getElementById('g_id_button'),
+          { theme: 'outline', size: 'large', shape: 'pill', width: 300 }
+        );
+        google.accounts.id.prompt(); // optional One Tap prompt
+      } catch (err) {
+        document.getElementById('login-error').textContent = 'Could not load Google Sign-In. Check your connection and refresh.';
+        document.getElementById('login-error').style.display = 'block';
+      }
+    })();
+  </script>
+</body>
+</html>
